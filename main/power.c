@@ -146,4 +146,10 @@ void app_main(void)
     }
     
     ESP_ERROR_CHECK(adc_oneshot_del_unit(adc1_handle));
+    ESP_ERROR_CHECK(mcpwm_del_generator(generateTrackA));
+    ESP_ERROR_CHECK(mcpwm_del_generator(generateTrackB));
+    ESP_ERROR_CHECK(mcpwm_del_comparator(compareTrackA));
+    ESP_ERROR_CHECK(mcpwm_del_comparator(compareTrackB));
+    ESP_ERROR_CHECK(mcpwm_del_operator(operator));
+    ESP_ERROR_CHECK(mcpwm_del_timer(timer));
 }
