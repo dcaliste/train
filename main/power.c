@@ -115,10 +115,14 @@ struct PositionInput {
 
 void position_input_setup(const struct PositionInput *positions)
 {
-    ESP_ERROR_CHECK(gpio_set_direction(positions->close1, GPIO_MODE_INPUT));
-    ESP_ERROR_CHECK(gpio_set_direction(positions->close2, GPIO_MODE_INPUT));
-    ESP_ERROR_CHECK(gpio_set_direction(positions->far1, GPIO_MODE_INPUT));
-    ESP_ERROR_CHECK(gpio_set_direction(positions->far2, GPIO_MODE_INPUT));
+    if (positions->close1 != GPIO_NUM_NC)
+        ESP_ERROR_CHECK(gpio_set_direction(positions->close1, GPIO_MODE_INPUT));
+    if (positions->close2 != GPIO_NUM_NC)
+        ESP_ERROR_CHECK(gpio_set_direction(positions->close2, GPIO_MODE_INPUT));
+    if (positions->far1 != GPIO_NUM_NC)
+        ESP_ERROR_CHECK(gpio_set_direction(positions->far1, GPIO_MODE_INPUT));
+    if (positions->far2 != GPIO_NUM_NC)
+        ESP_ERROR_CHECK(gpio_set_direction(positions->far2, GPIO_MODE_INPUT));
 }
 
 enum States {
@@ -280,9 +284,9 @@ void app_main(void)
     pwm.pwm1 = GPIO_NUM_19;
     pwm.pwm2 = GPIO_NUM_18;
     positions.far1 = GPIO_NUM_35;
-    positions.far2 = GPIO_NUM_39;
+    positions.far2 = GPIO_NUM_NC; //GPIO_NUM_36;
     positions.close1 = GPIO_NUM_34;
-    positions.close2 = GPIO_NUM_36;
+    positions.close2 = GPIO_NUM_39;
     track_new(&trackA, &system, command, pwm, positions);
     command.variablePin = ADC_CHANNEL_5;
     command.forwardPin  = GPIO_NUM_27;
@@ -290,10 +294,10 @@ void app_main(void)
     pwm.enable = GPIO_NUM_4;
     pwm.pwm1 = GPIO_NUM_17;
     pwm.pwm2 = GPIO_NUM_16;
-    positions.far1 = GPIO_NUM_22;
-    positions.far2 = GPIO_NUM_1;
-    positions.close1 = GPIO_NUM_3;
-    positions.close2 = GPIO_NUM_21;
+    positions.far1 = GPIO_NUM_NC; //GPIO_NUM_22;
+    positions.far2 = GPIO_NUM_NC; //GPIO_NUM_1;
+    positions.close1 = GPIO_NUM_NC; //GPIO_NUM_3;
+    positions.close2 = GPIO_NUM_NC; //GPIO_NUM_21;
     track_new(&trackB, &system, command, pwm, positions);
 
     system_start(&system);
