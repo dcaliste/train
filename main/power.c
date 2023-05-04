@@ -212,6 +212,18 @@ void track_free(struct Track *track)
     ESP_ERROR_CHECK(mcpwm_del_comparator(track->pwm.compare));
 }
 
+#define SLEEP_TIME 50      // Sampling period in milliseconds
+int track_adjust_speed(struct Track *track, int target)
+{
+    if (track->duration > 0) {
+        int rate;
+        rate = (target - track->speed) * SLEEP_TIME / track->duration;
+        return track->speed + rate < 0 ? 0 : track->speed + rate;
+    } else {
+        return target;
+    }
+}
+
 void track_set_state(struct Track *track, enum States state, int duration)
 {
     track->state = state;
@@ -223,12 +235,13 @@ int track_state_is_done(const struct Track *track)
     return (track->duration <= 0);
 }
 
-#define SLEEP_TIME 50      // Sampling period in milliseconds
 #define PASSING_SPEED 2700 // Max is 4096
 #define STATION_SPEED 1800 // Idem
 #define DEC_DURATION 3000  // Deceleration duration in milliseconds
 #define ACC_DURATION 3000  // Acceleration duration in milliseconds
-#define STOP_DURATION 5000 // Deceleration duration in milliseconds
+#define BREAK_DURATION 300 // Stopping duration
+#define STOP_DURATION 8000 // Time spend on platform
+#define AUTO_DETECT 0      // No timer, next transition is based on detection
 #define STOP_COUNT 3       // Number of passing in station before a stop
 int track_update(struct Track *track)
 {
@@ -274,43 +287,21 @@ int track_update(struct Track *track)
     /*     track->state = SOMEWHERE; */
 
     int speedLimit = track->count % STOP_COUNT ? PASSING_SPEED : STATION_SPEED;
+    speedLimit = value < speedLimit ? value : speedLimit;
     if (track->state == APPROACHING) {
-        if (track->duration > 0) {
-            int rate;
-            rate = ((value < speedLimit ? value : speedLimit) - track->speed) * SLEEP_TIME / track->duration;
-            value = track->speed + rate;
-            track->duration -= SLEEP_TIME;
-        } else {
-            track->state = PASSING_BY;
-            track->duration = 3000;
-        }
+        value = track_adjust_speed(track, speedLimit);
     } else if (track->state == PASSING_BY) {
-        if (track->duration > 0) {
-            track->duration -= SLEEP_TIME;
-        } else {
-            track->state = track->count % STOP_COUNT ? LEAVING : IN_STATION;
-            track->duration = track->count % STOP_COUNT ? ACC_DURATION : STOP_DURATION;
-        }
-        value = value < speedLimit ? value : speedLimit;
+        value = speedLimit;
+    } else if (track->state == STOPPING) {
+        value = track_adjust_speed(track, 0);
     } else if (track->state == IN_STATION) {
-        if (track->duration > 0) {
-            track->duration -= SLEEP_TIME;
-        } else {
-            track->state = LEAVING;
-            track->duration = ACC_DURATION;
-        }
         value = 0;
     } else if (track->state == LEAVING) {
-        if (track->duration > 0) {
-            int rate;
-            rate = (value - track->speed) * SLEEP_TIME / track->duration;
-            value = track->speed + rate;
-            track->duration -= SLEEP_TIME;
-        } else {
-            track->state = SOMEWHERE;
-            track->count += 1;
-        }
+        value = track_adjust_speed(track, value);
     }
+
+    if (track->duration > 0 && (track->isBackward || track->isForward))
+        track->duration -= SLEEP_TIME;
     
     int isUpdated = 0;
     ESP_ERROR_CHECK(gpio_set_level(track->pwm.pwm1, track->isForward ? 1 : 0));
@@ -320,8 +311,9 @@ int track_update(struct Track *track)
         track->speed = value;
         ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(track->pwm.compare, value));
     }
-    if (isUpdated)
-        ESP_LOGI("Power", "ADC(chan %d) raw data: %d", track->command.variablePin, value);
+    if (isUpdated) {
+        ESP_LOGI("Power", "PWM updated value: %d", value);
+    }
     return isUpdated;
 }
 
