@@ -164,6 +164,7 @@ enum States {
              SOMEWHERE,
              APPROACHING,
              PASSING_BY,
+             STOPPING,
              IN_STATION,
              LEAVING
 };
@@ -211,9 +212,20 @@ void track_free(struct Track *track)
     ESP_ERROR_CHECK(mcpwm_del_comparator(track->pwm.compare));
 }
 
+void track_set_state(struct Track *track, enum States state, int duration)
+{
+    track->state = state;
+    track->duration = duration;
+}
+
+int track_state_is_done(const struct Track *track)
+{
+    return (track->duration <= 0);
+}
+
 #define SLEEP_TIME 50      // Sampling period in milliseconds
-#define PASSING_SPEED 3200 // Max is 4096  
-#define STATION_SPEED 1856 // Idem
+#define PASSING_SPEED 2700 // Max is 4096
+#define STATION_SPEED 1800 // Idem
 #define DEC_DURATION 3000  // Deceleration duration in milliseconds
 #define ACC_DURATION 3000  // Acceleration duration in milliseconds
 #define STOP_DURATION 5000 // Deceleration duration in milliseconds
@@ -231,21 +243,31 @@ int track_update(struct Track *track)
     if (track->state == SOMEWHERE
         && ((position_input_isTriggered(&track->positions, FAR_1) && track->isForward) ||
             (position_input_isTriggered(&track->positions, FAR_2) && track->isBackward))) {
-        track->state = APPROACHING;
-        track->duration = DEC_DURATION;
+        track_set_state(track, APPROACHING, DEC_DURATION);
         ESP_LOGI("Position", "train approaching");
     } else if (track->state == APPROACHING
                && ((position_input_isTriggered(&track->positions, CLOSE_1) && track->isForward) ||
                    (position_input_isTriggered(&track->positions, CLOSE_2) && track->isBackward))) {
-        track->state = PASSING_BY;
-        track->duration = 3000;
+        track_set_state(track, PASSING_BY, 0);
         ESP_LOGI("Position", "train passing by the station (%d)", track->count);
     } else if (track->state == PASSING_BY
                && ((position_input_isTriggered(&track->positions, CLOSE_2) && track->isForward) ||
                    (position_input_isTriggered(&track->positions, CLOSE_1) && track->isBackward))) {
-    /*     track->state = track->count % STOP_COUNT ? LEAVING : IN_STATION; */
-    /*     track->duration = track->count % STOP_COUNT ? ACC_DURATION : STOP_DURATION; */
-    /*     ESP_LOGI("Position", "train %s", track->count % STOP_COUNT ? "leaving" : "in station"); */
+        if (track->count % STOP_COUNT)
+            track_set_state(track, LEAVING, ACC_DURATION);
+        else
+            track_set_state(track, STOPPING, BREAK_DURATION);
+        ESP_LOGI("Position", "train at platform end");
+    } else if (track->state == STOPPING && !track->speed) {
+        track_set_state(track, IN_STATION, STOP_DURATION);
+        ESP_LOGI("Position", "train is stopped");
+    } else if (track->state == IN_STATION && track_state_is_done(track)) {
+        track_set_state(track, LEAVING, ACC_DURATION);
+        ESP_LOGI("Position", "train is departing");
+    } else if (track->state == LEAVING && track->speed >= value) {
+        track_set_state(track, SOMEWHERE, AUTO_DETECT);
+        track->count += 1;
+        ESP_LOGI("Position", "train has done %d passings", track->count);
     }
     /* } else if (track->state == LEAVING && ((position_input_isTriggered(&track->positions, FAR_2) && track->isForward) || */
     /*                                        (position_input_isTriggered(&track->positions, FAR_1) && track->isBackward))) */
