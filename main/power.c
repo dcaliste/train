@@ -113,6 +113,13 @@ struct PositionInput {
     gpio_num_t far1, far2;
 };
 
+enum Positions {
+                CLOSE_1,
+                CLOSE_2,
+                FAR_1,
+                FAR_2
+};
+
 void position_input_setup(const struct PositionInput *positions)
 {
     if (positions->close1 != GPIO_NUM_NC)
@@ -123,6 +130,34 @@ void position_input_setup(const struct PositionInput *positions)
         ESP_ERROR_CHECK(gpio_set_direction(positions->far1, GPIO_MODE_INPUT));
     if (positions->far2 != GPIO_NUM_NC)
         ESP_ERROR_CHECK(gpio_set_direction(positions->far2, GPIO_MODE_INPUT));
+}
+
+int position_input_isTriggered(const struct PositionInput *positions, enum Positions position)
+{
+    switch (position) {
+    case CLOSE_1:
+        return (positions->close1 != GPIO_NUM_NC) ? !gpio_get_level(positions->close1) : 0;
+    case CLOSE_2:
+        return (positions->close2 != GPIO_NUM_NC) ? !gpio_get_level(positions->close2) : 0;
+    case FAR_1:
+        return (positions->far1 != GPIO_NUM_NC) ? !gpio_get_level(positions->far1) : 0;
+    case FAR_2:
+        return (positions->far2 != GPIO_NUM_NC) ? !gpio_get_level(positions->far2) : 0;
+    default:
+        return 0;
+    }
+}
+
+void position_input_log(const struct PositionInput *positions)
+{
+    if (position_input_isTriggered(positions, FAR_1))
+        ESP_LOGI("Position", "FAR_1");
+    if (position_input_isTriggered(positions, CLOSE_1))
+        ESP_LOGI("Position", "CLOSE_1");
+    if (position_input_isTriggered(positions, CLOSE_2))
+        ESP_LOGI("Position", "CLOSE_2");
+    if (position_input_isTriggered(positions, FAR_2))
+        ESP_LOGI("Position", "FAR_2");
 }
 
 enum States {
@@ -192,24 +227,28 @@ int track_update(struct Track *track)
     track->isForward = (value && !gpio_get_level(track->command.forwardPin));
     track->isBackward = (value && !gpio_get_level(track->command.backwardPin));
 
-    if (track->state == SOMEWHERE && ((!gpio_get_level(track->positions.far1) && track->isForward) ||
-                                      (!gpio_get_level(track->positions.far2) && track->isBackward))) {
+    position_input_log(&track->positions);
+    if (track->state == SOMEWHERE
+        && ((position_input_isTriggered(&track->positions, FAR_1) && track->isForward) ||
+            (position_input_isTriggered(&track->positions, FAR_2) && track->isBackward))) {
         track->state = APPROACHING;
         track->duration = DEC_DURATION;
         ESP_LOGI("Position", "train approaching");
-    } else if (track->state == APPROACHING && ((!gpio_get_level(track->positions.close1) && track->isForward) ||
-                                               (!gpio_get_level(track->positions.close2) && track->isBackward))) {
+    } else if (track->state == APPROACHING
+               && ((position_input_isTriggered(&track->positions, CLOSE_1) && track->isForward) ||
+                   (position_input_isTriggered(&track->positions, CLOSE_2) && track->isBackward))) {
         track->state = PASSING_BY;
         track->duration = 3000;
         ESP_LOGI("Position", "train passing by the station (%d)", track->count);
-    /* } else if (track->state == PASSING_BY && ((!gpio_get_level(track->positions.close2) && track->isForward) || */
-    /*                                           (!gpio_get_level(track->positions.close1) && track->isBackward))) { */
+    } else if (track->state == PASSING_BY
+               && ((position_input_isTriggered(&track->positions, CLOSE_2) && track->isForward) ||
+                   (position_input_isTriggered(&track->positions, CLOSE_1) && track->isBackward))) {
     /*     track->state = track->count % STOP_COUNT ? LEAVING : IN_STATION; */
     /*     track->duration = track->count % STOP_COUNT ? ACC_DURATION : STOP_DURATION; */
     /*     ESP_LOGI("Position", "train %s", track->count % STOP_COUNT ? "leaving" : "in station"); */
     }
-    /* } else if (track->state == LEAVING && ((!gpio_get_level(track->positions.far2) && track->isForward) || */
-    /*                                        (!gpio_get_level(track->positions.far1) && track->isBackward))) */
+    /* } else if (track->state == LEAVING && ((position_input_isTriggered(&track->positions, FAR_2) && track->isForward) || */
+    /*                                        (position_input_isTriggered(&track->positions, FAR_1) && track->isBackward))) */
     /*     track->state = SOMEWHERE; */
 
     int speedLimit = track->count % STOP_COUNT ? PASSING_SPEED : STATION_SPEED;
