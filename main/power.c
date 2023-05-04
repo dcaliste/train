@@ -183,7 +183,7 @@ int track_update(struct Track *track)
 {
     int value;
     ESP_ERROR_CHECK(adc_oneshot_read(track->system->adc, track->command.variablePin, &value));
-    value = 512 + 7 * value;
+    value = value ? 512 + 7 * value : 0;
 
     track->isForward = (value && !gpio_get_level(track->command.forwardPin));
     track->isBackward = (value && !gpio_get_level(track->command.backwardPin));
