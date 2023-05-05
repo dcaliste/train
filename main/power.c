@@ -160,6 +160,15 @@ void position_input_log(const struct PositionInput *positions)
         ESP_LOGI("Position", "FAR_2");
 }
 
+struct Timings {
+    int sleepTime;
+
+    int passingSpeed, stationSpeed;
+    int decDuration, accDuration, breakDuration;
+
+    int stopDuration, stopCount;
+};
+
 enum States {
              SOMEWHERE,
              APPROACHING,
@@ -176,6 +185,7 @@ struct Track {
     struct SpeedInput command;
     struct PWMOutput pwm;
     struct PositionInput positions;
+    struct Timings timings;
 
     int isForward, isBackward;
     int speed;
@@ -188,7 +198,8 @@ void track_new(struct Track *track, const char *label,
                const struct System *system,
                const struct SpeedInput command,
                const struct PWMOutput pwm,
-               const struct PositionInput positions)
+               const struct PositionInput positions,
+               const struct Timings timings)
 {
     track->label = label;
 
@@ -202,6 +213,8 @@ void track_new(struct Track *track, const char *label,
 
     track->positions = positions;
     position_input_setup(&track->positions);
+
+    track->timings = timings;
 
     track->isForward = 0;
     track->isBackward = 0;
@@ -217,22 +230,41 @@ void track_free(struct Track *track)
     ESP_ERROR_CHECK(mcpwm_del_comparator(track->pwm.compare));
 }
 
-#define SLEEP_TIME 50      // Sampling period in milliseconds
 int track_adjust_speed(struct Track *track, int target)
 {
     if (track->duration > 0) {
         int rate;
-        rate = (target - track->speed) * SLEEP_TIME / track->duration;
+        rate = (target - track->speed) * track->timings.sleepTime / track->duration;
         return track->speed + rate < 0 ? 0 : track->speed + rate;
     } else {
         return target;
     }
 }
 
-void track_set_state(struct Track *track, enum States state, int duration)
+#define AUTO_DETECT 0      // No timer, next transition is based on detection
+void track_set_state(struct Track *track, enum States state)
 {
     track->state = state;
-    track->duration = duration;
+    switch (state) {
+    case SOMEWHERE:
+        track->duration = AUTO_DETECT;
+        break;
+    case APPROACHING:
+        track->duration = track->timings.decDuration;
+        break;
+    case PASSING_BY:
+        track->duration = AUTO_DETECT;
+        break;
+    case LEAVING:
+        track->duration = track->timings.accDuration;
+        break;
+    case STOPPING:
+        track->duration = track->timings.breakDuration;
+        break;
+    case IN_STATION:
+        track->duration = track->timings.stopDuration;
+        break;
+    }
 }
 
 int track_state_is_done(const struct Track *track)
@@ -240,14 +272,6 @@ int track_state_is_done(const struct Track *track)
     return (track->duration <= 0);
 }
 
-#define PASSING_SPEED 2700 // Max is 4096
-#define STATION_SPEED 1800 // Idem
-#define DEC_DURATION 3000  // Deceleration duration in milliseconds
-#define ACC_DURATION 3000  // Acceleration duration in milliseconds
-#define BREAK_DURATION 300 // Stopping duration
-#define STOP_DURATION 8000 // Time spend on platform
-#define AUTO_DETECT 0      // No timer, next transition is based on detection
-#define STOP_COUNT 3       // Number of passing in station before a stop
 int track_update(struct Track *track)
 {
     int value;
@@ -261,37 +285,35 @@ int track_update(struct Track *track)
     if (track->state == SOMEWHERE
         && ((position_input_isTriggered(&track->positions, FAR_1) && track->isForward) ||
             (position_input_isTriggered(&track->positions, FAR_2) && track->isBackward))) {
-        track_set_state(track, APPROACHING, DEC_DURATION);
+        track_set_state(track, APPROACHING);
         ESP_LOGI("Position", "%s: train approaching", track->label);
     } else if (track->state == APPROACHING
                && ((position_input_isTriggered(&track->positions, CLOSE_1) && track->isForward) ||
                    (position_input_isTriggered(&track->positions, CLOSE_2) && track->isBackward))) {
-        track_set_state(track, PASSING_BY, 0);
+        track_set_state(track, PASSING_BY);
         ESP_LOGI("Position", "%s: train passing by the station (%d)", track->label, track->count);
     } else if (track->state == PASSING_BY
                && ((position_input_isTriggered(&track->positions, CLOSE_2) && track->isForward) ||
                    (position_input_isTriggered(&track->positions, CLOSE_1) && track->isBackward))) {
-        if (track->count % STOP_COUNT)
-            track_set_state(track, LEAVING, ACC_DURATION);
+        if (track->count % track->timings.stopCount)
+            track_set_state(track, LEAVING);
         else
-            track_set_state(track, STOPPING, BREAK_DURATION);
+            track_set_state(track, STOPPING);
         ESP_LOGI("Position", "%s: train at platform end", track->label);
     } else if (track->state == STOPPING && !track->speed) {
-        track_set_state(track, IN_STATION, STOP_DURATION);
+        track_set_state(track, IN_STATION);
         ESP_LOGI("Position", "%s: train is stopped", track->label);
     } else if (track->state == IN_STATION && track_state_is_done(track)) {
-        track_set_state(track, LEAVING, ACC_DURATION);
+        track_set_state(track, LEAVING);
         ESP_LOGI("Position", "%s: train is departing", track->label);
     } else if (track->state == LEAVING && track->speed >= value) {
-        track_set_state(track, SOMEWHERE, AUTO_DETECT);
+        track_set_state(track, SOMEWHERE);
         track->count += 1;
         ESP_LOGI("Position", "%s: train has done %d passings", track->label, track->count);
     }
-    /* } else if (track->state == LEAVING && ((position_input_isTriggered(&track->positions, FAR_2) && track->isForward) || */
-    /*                                        (position_input_isTriggered(&track->positions, FAR_1) && track->isBackward))) */
-    /*     track->state = SOMEWHERE; */
 
-    int speedLimit = track->count % STOP_COUNT ? PASSING_SPEED : STATION_SPEED;
+    int speedLimit = track->count % track->timings.stopCount
+        ? track->timings.passingSpeed : track->timings.stationSpeed;
     speedLimit = value < speedLimit ? value : speedLimit;
     if (track->state == APPROACHING) {
         value = track_adjust_speed(track, speedLimit);
@@ -306,7 +328,7 @@ int track_update(struct Track *track)
     }
 
     if (track->duration > 0 && (track->isBackward || track->isForward))
-        track->duration -= SLEEP_TIME;
+        track->duration -= track->timings.sleepTime;
     
     int isUpdated = 0;
     ESP_ERROR_CHECK(gpio_set_level(track->pwm.pwm1, track->isForward ? 1 : 0));
@@ -331,6 +353,16 @@ void app_main(void)
     struct System system;
     system_new(&system);
 
+    struct Timings timings;
+    timings.sleepTime = 50;      // Sampling period in milliseconds
+    timings.passingSpeed = 2700; // Max is 4096
+    timings.stationSpeed = 1800; // Idem
+    timings.decDuration = 3000;  // Deceleration duration in milliseconds
+    timings.accDuration = 3000;  // Acceleration duration in milliseconds
+    timings.breakDuration = 300; // Stopping duration
+    timings.stopDuration = 8000; // Time spend on platform
+    timings.stopCount = 3;       // Number of passing in station before a stop
+
     struct SpeedInput command;
     struct PWMOutput pwm;
     struct PositionInput positions;
@@ -345,7 +377,7 @@ void app_main(void)
     positions.far2 = GPIO_NUM_NC; //GPIO_NUM_36;
     positions.close1 = GPIO_NUM_34;
     positions.close2 = GPIO_NUM_39;
-    track_new(&trackA, "track A", &system, command, pwm, positions);
+    track_new(&trackA, "track A", &system, command, pwm, positions, timings);
     command.variablePin = ADC_CHANNEL_5;
     command.forwardPin  = GPIO_NUM_27;
     command.backwardPin = GPIO_NUM_14;
@@ -356,15 +388,17 @@ void app_main(void)
     positions.far2 = GPIO_NUM_NC; //GPIO_NUM_1;
     positions.close1 = GPIO_NUM_NC; //GPIO_NUM_3;
     positions.close2 = GPIO_NUM_NC; //GPIO_NUM_21;
-    track_new(&trackB, "track B", &system, command, pwm, positions);
+    track_new(&trackB, "track B", &system, command, pwm, positions, timings);
 
     system_start(&system);
     while (1) {
         ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_2, 0));
-        if (track_update(&trackA) || track_update(&trackB)) {
+        int trackAUpdated = track_update(&trackA);
+        int trackBUpdated = track_update(&trackB);
+        if (trackAUpdated || trackBUpdated) {
             ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_2, 1));
         }
-        vTaskDelay(pdMS_TO_TICKS(SLEEP_TIME));
+        vTaskDelay(pdMS_TO_TICKS(timings.sleepTime));
     }
 
     track_free(&trackA);
