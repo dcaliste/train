@@ -170,6 +170,8 @@ enum States {
 };
 
 struct Track {
+    const char* label;
+
     const struct System *system;
     struct SpeedInput command;
     struct PWMOutput pwm;
@@ -182,11 +184,14 @@ struct Track {
     enum States state;
 };
 
-void track_new(struct Track *track, const struct System *system,
+void track_new(struct Track *track, const char *label,
+               const struct System *system,
                const struct SpeedInput command,
                const struct PWMOutput pwm,
                const struct PositionInput positions)
 {
+    track->label = label;
+
     track->system = system;
 
     track->command = command;
@@ -257,12 +262,12 @@ int track_update(struct Track *track)
         && ((position_input_isTriggered(&track->positions, FAR_1) && track->isForward) ||
             (position_input_isTriggered(&track->positions, FAR_2) && track->isBackward))) {
         track_set_state(track, APPROACHING, DEC_DURATION);
-        ESP_LOGI("Position", "train approaching");
+        ESP_LOGI("Position", "%s: train approaching", track->label);
     } else if (track->state == APPROACHING
                && ((position_input_isTriggered(&track->positions, CLOSE_1) && track->isForward) ||
                    (position_input_isTriggered(&track->positions, CLOSE_2) && track->isBackward))) {
         track_set_state(track, PASSING_BY, 0);
-        ESP_LOGI("Position", "train passing by the station (%d)", track->count);
+        ESP_LOGI("Position", "%s: train passing by the station (%d)", track->label, track->count);
     } else if (track->state == PASSING_BY
                && ((position_input_isTriggered(&track->positions, CLOSE_2) && track->isForward) ||
                    (position_input_isTriggered(&track->positions, CLOSE_1) && track->isBackward))) {
@@ -270,17 +275,17 @@ int track_update(struct Track *track)
             track_set_state(track, LEAVING, ACC_DURATION);
         else
             track_set_state(track, STOPPING, BREAK_DURATION);
-        ESP_LOGI("Position", "train at platform end");
+        ESP_LOGI("Position", "%s: train at platform end", track->label);
     } else if (track->state == STOPPING && !track->speed) {
         track_set_state(track, IN_STATION, STOP_DURATION);
-        ESP_LOGI("Position", "train is stopped");
+        ESP_LOGI("Position", "%s: train is stopped", track->label);
     } else if (track->state == IN_STATION && track_state_is_done(track)) {
         track_set_state(track, LEAVING, ACC_DURATION);
-        ESP_LOGI("Position", "train is departing");
+        ESP_LOGI("Position", "%s: train is departing", track->label);
     } else if (track->state == LEAVING && track->speed >= value) {
         track_set_state(track, SOMEWHERE, AUTO_DETECT);
         track->count += 1;
-        ESP_LOGI("Position", "train has done %d passings", track->count);
+        ESP_LOGI("Position", "%s: train has done %d passings", track->label, track->count);
     }
     /* } else if (track->state == LEAVING && ((position_input_isTriggered(&track->positions, FAR_2) && track->isForward) || */
     /*                                        (position_input_isTriggered(&track->positions, FAR_1) && track->isBackward))) */
@@ -312,7 +317,7 @@ int track_update(struct Track *track)
         ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(track->pwm.compare, value));
     }
     if (isUpdated) {
-        ESP_LOGI("Power", "PWM updated value: %d", value);
+        ESP_LOGI("Power", "%s: PWM updated value: %d", track->label, value);
     }
     return isUpdated;
 }
@@ -340,7 +345,7 @@ void app_main(void)
     positions.far2 = GPIO_NUM_NC; //GPIO_NUM_36;
     positions.close1 = GPIO_NUM_34;
     positions.close2 = GPIO_NUM_39;
-    track_new(&trackA, &system, command, pwm, positions);
+    track_new(&trackA, "track A", &system, command, pwm, positions);
     command.variablePin = ADC_CHANNEL_5;
     command.forwardPin  = GPIO_NUM_27;
     command.backwardPin = GPIO_NUM_14;
@@ -351,7 +356,7 @@ void app_main(void)
     positions.far2 = GPIO_NUM_NC; //GPIO_NUM_1;
     positions.close1 = GPIO_NUM_NC; //GPIO_NUM_3;
     positions.close2 = GPIO_NUM_NC; //GPIO_NUM_21;
-    track_new(&trackB, &system, command, pwm, positions);
+    track_new(&trackB, "track B", &system, command, pwm, positions);
 
     system_start(&system);
     while (1) {
