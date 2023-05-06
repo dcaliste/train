@@ -164,10 +164,23 @@ struct Timings {
     int sleepTime;
 
     int passingSpeed, stationSpeed;
+    int passingDuration, stationDuration;
     int decDuration, accDuration, breakDuration;
 
     int stopDuration, stopCount;
 };
+
+int timings_adjust_speed(int currentSpeed, int targetDuration, int realDuration, int maxSpeed)
+{
+    int outSpeed;
+
+    outSpeed = currentSpeed * realDuration / targetDuration;
+    if (outSpeed < 768)
+        outSpeed = 768;
+    if (outSpeed > maxSpeed)
+        outSpeed = maxSpeed;
+    return outSpeed;
+}
 
 enum States {
              SOMEWHERE,
@@ -189,7 +202,7 @@ struct Track {
 
     int isForward, isBackward;
     int speed;
-    int duration;
+    int duration, elapsed;
     int count;
     enum States state;
 };
@@ -235,7 +248,7 @@ int track_adjust_speed(struct Track *track, int target)
     if (track->duration > 0) {
         int rate;
         rate = (target - track->speed) * track->timings.sleepTime / track->duration;
-        return track->speed + rate < 0 ? 0 : track->speed + rate;
+        return track->speed + rate < 0 ? 0 : (track->speed + rate > 4095 ? 4095 : track->speed + rate);
     } else {
         return target;
     }
@@ -254,6 +267,7 @@ void track_set_state(struct Track *track, enum States state)
         break;
     case PASSING_BY:
         track->duration = AUTO_DETECT;
+        track->elapsed = 0;
         break;
     case LEAVING:
         track->duration = track->timings.accDuration;
@@ -270,6 +284,27 @@ void track_set_state(struct Track *track, enum States state)
 int track_state_is_done(const struct Track *track)
 {
     return (track->duration <= 0);
+}
+
+int track_adjust_state_speed(struct Track *track, int value)
+{
+    int speedLimit = track->count % track->timings.stopCount
+        ? track->timings.passingSpeed : track->timings.stationSpeed;
+    speedLimit = value < speedLimit ? value : speedLimit;
+    switch (track->state) {
+    case (APPROACHING):
+        return track_adjust_speed(track, speedLimit);
+    case (PASSING_BY):
+        return speedLimit;
+    case (STOPPING):
+        return track_adjust_speed(track, 0);
+    case (IN_STATION):
+        return 0;
+    case (LEAVING):
+        return track_adjust_speed(track, value);
+    default:
+        return value;
+    }
 }
 
 int track_update(struct Track *track)
@@ -295,11 +330,18 @@ int track_update(struct Track *track)
     } else if (track->state == PASSING_BY
                && ((position_input_isTriggered(&track->positions, CLOSE_2) && track->isForward) ||
                    (position_input_isTriggered(&track->positions, CLOSE_1) && track->isBackward))) {
-        if (track->count % track->timings.stopCount)
+        if (track->count % track->timings.stopCount) {
             track_set_state(track, LEAVING);
-        else
+            track->timings.passingSpeed = timings_adjust_speed(track->timings.passingSpeed,
+                                                               track->timings.passingDuration, track->elapsed, 3072);
+            ESP_LOGI("Position", "%s: adjust passing speed %d", track->label, track->timings.passingSpeed);
+        } else {
             track_set_state(track, STOPPING);
-        ESP_LOGI("Position", "%s: train at platform end", track->label);
+            track->timings.stationSpeed = timings_adjust_speed(track->timings.stationSpeed,
+                                                               track->timings.stationDuration, track->elapsed, 2048);
+            ESP_LOGI("Position", "%s: adjust station speed %d", track->label, track->timings.stationSpeed);
+        }
+        ESP_LOGI("Position", "%s: train at platform end (in %d ms)", track->label, track->elapsed);
     } else if (track->state == STOPPING && !track->speed) {
         track_set_state(track, IN_STATION);
         ESP_LOGI("Position", "%s: train is stopped", track->label);
@@ -312,23 +354,12 @@ int track_update(struct Track *track)
         ESP_LOGI("Position", "%s: train has done %d passings", track->label, track->count);
     }
 
-    int speedLimit = track->count % track->timings.stopCount
-        ? track->timings.passingSpeed : track->timings.stationSpeed;
-    speedLimit = value < speedLimit ? value : speedLimit;
-    if (track->state == APPROACHING) {
-        value = track_adjust_speed(track, speedLimit);
-    } else if (track->state == PASSING_BY) {
-        value = speedLimit;
-    } else if (track->state == STOPPING) {
-        value = track_adjust_speed(track, 0);
-    } else if (track->state == IN_STATION) {
-        value = 0;
-    } else if (track->state == LEAVING) {
-        value = track_adjust_speed(track, value);
-    }
+    value = track_adjust_state_speed(track, value);
 
     if (track->duration > 0 && (track->isBackward || track->isForward))
         track->duration -= track->timings.sleepTime;
+    if (track->state == PASSING_BY && (track->isBackward || track->isForward))
+        track->elapsed += track->timings.sleepTime;
     
     int isUpdated = 0;
     ESP_ERROR_CHECK(gpio_set_level(track->pwm.pwm1, track->isForward ? 1 : 0));
@@ -354,14 +385,16 @@ void app_main(void)
     system_new(&system);
 
     struct Timings timings;
-    timings.sleepTime = 50;      // Sampling period in milliseconds
-    timings.passingSpeed = 2700; // Max is 4096
-    timings.stationSpeed = 1800; // Idem
-    timings.decDuration = 3000;  // Deceleration duration in milliseconds
-    timings.accDuration = 3000;  // Acceleration duration in milliseconds
-    timings.breakDuration = 300; // Stopping duration
-    timings.stopDuration = 8000; // Time spend on platform
-    timings.stopCount = 3;       // Number of passing in station before a stop
+    timings.sleepTime = 50;         // Sampling period in milliseconds
+    timings.passingSpeed = 2700;    // Max is 4096
+    timings.stationSpeed = 1800;    // Idem
+    timings.passingDuration = 2000; // Target time for passing
+    timings.stationDuration = 3000; // Target time for station stop
+    timings.decDuration = 3000;     // Deceleration duration in milliseconds
+    timings.accDuration = 3000;     // Acceleration duration in milliseconds
+    timings.breakDuration = 300;    // Stopping duration
+    timings.stopDuration = 8000;    // Time spent on platform
+    timings.stopCount = 3;          // Number of passing in station before a stop
 
     struct SpeedInput command;
     struct PWMOutput pwm;
