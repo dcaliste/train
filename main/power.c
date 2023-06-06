@@ -165,7 +165,8 @@ struct Timings {
 
     int passingSpeed, stationSpeed;
     int passingDuration, stationDuration;
-    int decDuration, accDuration, breakDuration;
+    int decDuration;
+    int decTarget, accDuration, breakDuration;
 
     int stopDuration, stopCount;
 };
@@ -180,6 +181,18 @@ int timings_adjust_speed(int currentSpeed, int targetDuration, int realDuration,
     if (outSpeed > maxSpeed)
         outSpeed = maxSpeed;
     return outSpeed;
+}
+
+int timings_adjust_duration(int currentDuration, int targetDuration, int realDuration)
+{
+    int outDuration;
+
+    outDuration = currentDuration * realDuration / targetDuration;
+    if (outDuration < 300)
+        outDuration = 300;
+    if (outDuration > 5000)
+        outDuration = 5000;
+    return outDuration;
 }
 
 enum States {
@@ -264,6 +277,7 @@ void track_set_state(struct Track *track, enum States state)
         break;
     case APPROACHING:
         track->duration = track->timings.decDuration;
+        track->elapsed = 0;
         break;
     case PASSING_BY:
         track->duration = AUTO_DETECT;
@@ -271,9 +285,11 @@ void track_set_state(struct Track *track, enum States state)
         break;
     case LEAVING:
         track->duration = track->timings.accDuration;
+        track->elapsed = -1;
         break;
     case STOPPING:
         track->duration = track->timings.breakDuration;
+        track->elapsed = -1;
         break;
     case IN_STATION:
         track->duration = track->timings.stopDuration;
@@ -325,6 +341,9 @@ int track_update(struct Track *track)
     } else if (track->state == APPROACHING
                && ((position_input_isTriggered(&track->positions, CLOSE_1) && track->isForward) ||
                    (position_input_isTriggered(&track->positions, CLOSE_2) && track->isBackward))) {
+        track->timings.decDuration = timings_adjust_duration(track->timings.decDuration,
+                                                          track->timings.decTarget, track->elapsed);
+        ESP_LOGI("Position", "%s: adjust approaching duration %d", track->label, track->timings.decDuration);
         track_set_state(track, PASSING_BY);
         ESP_LOGI("Position", "%s: train passing by the station (%d)", track->label, track->count);
     } else if (track->state == PASSING_BY
@@ -358,7 +377,7 @@ int track_update(struct Track *track)
 
     if (track->duration > 0 && (track->isBackward || track->isForward))
         track->duration -= track->timings.sleepTime;
-    if (track->state == PASSING_BY && (track->isBackward || track->isForward))
+    if (track->elapsed >= 0 && (track->isBackward || track->isForward))
         track->elapsed += track->timings.sleepTime;
     
     int isUpdated = 0;
@@ -388,10 +407,10 @@ void app_main(void)
     timings.sleepTime = 50;         // Sampling period in milliseconds
     timings.passingSpeed = 2700;    // Max is 4096
     timings.stationSpeed = 1800;    // Idem
-    timings.passingDuration = 2000; // Target time for passing
-    timings.stationDuration = 3000; // Target time for station stop
-    timings.decDuration = 3000;     // Deceleration duration in milliseconds
-    timings.accDuration = 3000;     // Acceleration duration in milliseconds
+    timings.passingDuration = 3500; // Target time for passing
+    timings.stationDuration = 4000; // Target time for station stop
+    timings.decTarget = 3000;       // Deceleration duration in milliseconds
+    timings.accDuration = 4000;     // Acceleration duration in milliseconds
     timings.breakDuration = 300;    // Stopping duration
     timings.stopDuration = 8000;    // Time spent on platform
     timings.stopCount = 3;          // Number of passing in station before a stop
