@@ -171,28 +171,22 @@ struct Timings {
     int stopDuration, stopCount;
 };
 
-int timings_adjust_speed(int currentSpeed, int targetDuration, int realDuration, int maxSpeed)
+void timings_adjust_speed(int *speed, int targetDuration, int realDuration, int maxSpeed)
 {
-    int outSpeed;
-
-    outSpeed = currentSpeed * realDuration / targetDuration;
-    if (outSpeed < 768)
-        outSpeed = 768;
-    if (outSpeed > maxSpeed)
-        outSpeed = maxSpeed;
-    return outSpeed;
+    *speed = *speed * realDuration / targetDuration;
+    if (*speed < 768)
+        *speed = 768;
+    if (*speed > maxSpeed)
+        *speed = maxSpeed;
 }
 
-int timings_adjust_duration(int currentDuration, int targetDuration, int realDuration)
+void timings_adjust_duration(int *duration, int targetDuration, int realDuration)
 {
-    int outDuration;
-
-    outDuration = currentDuration * realDuration / targetDuration;
-    if (outDuration < 300)
-        outDuration = 300;
-    if (outDuration > 5000)
-        outDuration = 5000;
-    return outDuration;
+    *duration = *duration * realDuration / targetDuration;
+    if (*duration < 300)
+        *duration = 300;
+    if (*duration > 5000)
+        *duration = 5000;
 }
 
 enum States {
@@ -246,6 +240,14 @@ void track_new(struct Track *track, const char *label,
     track->isBackward = 0;
     track->speed = 0;
     track->duration = 0;
+    /* gptimer_config_t timerCfg = */
+    /*     { */
+    /*      .clk_src = GPTIMER_CLK_SRC_DEFAULT, */
+    /*      .direction = GPTIMER_COUNT_DOWN, */
+    /*      .resolution_hz = 1000000, */
+    /*     }; */
+    /* ESP_ERROR_CHECK(gptimer_new_timer(&timerCfg, &track->timer)); */
+    /* ESP_ERROR_CHECK(gptimer_enable(track->timer)); */
     track->count = 0;
     track->state = SOMEWHERE;
 }
@@ -256,21 +258,9 @@ void track_free(struct Track *track)
     ESP_ERROR_CHECK(mcpwm_del_comparator(track->pwm.compare));
 }
 
-int track_adjust_speed(struct Track *track, int target)
-{
-    if (track->duration > 0) {
-        int rate;
-        rate = (target - track->speed) * track->timings.sleepTime / track->duration;
-        return track->speed + rate < 0 ? 0 : (track->speed + rate > 4095 ? 4095 : track->speed + rate);
-    } else {
-        return target;
-    }
-}
-
 #define AUTO_DETECT 0      // No timer, next transition is based on detection
 void track_set_state(struct Track *track, enum States state)
 {
-    track->state = state;
     switch (state) {
     case SOMEWHERE:
         track->duration = AUTO_DETECT;
@@ -280,14 +270,26 @@ void track_set_state(struct Track *track, enum States state)
         track->elapsed = 0;
         break;
     case PASSING_BY:
+        if (track->state == APPROACHING) {
+            timings_adjust_duration(&track->timings.decDuration,
+                                    track->timings.decTarget, track->elapsed);
+        }
         track->duration = AUTO_DETECT;
         track->elapsed = 0;
         break;
     case LEAVING:
+        if (track->state == PASSING_BY) {
+            timings_adjust_speed(&track->timings.passingSpeed,
+                                 track->timings.passingDuration, track->elapsed, 3072);
+        }
         track->duration = track->timings.accDuration;
         track->elapsed = -1;
         break;
     case STOPPING:
+        if (track->state == PASSING_BY) {
+            timings_adjust_speed(&track->timings.stationSpeed,
+                                 track->timings.stationDuration, track->elapsed, 2048);
+        }
         track->duration = track->timings.breakDuration;
         track->elapsed = -1;
         break;
@@ -295,6 +297,7 @@ void track_set_state(struct Track *track, enum States state)
         track->duration = track->timings.stopDuration;
         break;
     }
+    track->state = state;
 }
 
 int track_state_is_done(const struct Track *track)
@@ -302,24 +305,38 @@ int track_state_is_done(const struct Track *track)
     return (track->duration <= 0);
 }
 
-int track_adjust_state_speed(struct Track *track, int value)
+#define MAX_SPEED 4095     // Maximum speed value
+int track_state_get_speed_target(struct Track *track)
 {
-    int speedLimit = track->count % track->timings.stopCount
-        ? track->timings.passingSpeed : track->timings.stationSpeed;
-    speedLimit = value < speedLimit ? value : speedLimit;
     switch (track->state) {
     case (APPROACHING):
-        return track_adjust_speed(track, speedLimit);
-    case (PASSING_BY):
-        return speedLimit;
+    case (PASSING_BY): {
+        int speedTarget = track->count % track->timings.stopCount
+            ? track->timings.passingSpeed : track->timings.stationSpeed;
+        int durationTarget = track->state == APPROACHING ? track->timings.decTarget
+            : (track->count % track->timings.stopCount
+               ? track->timings.passingDuration : track->timings.stationDuration);
+        int delta = track->elapsed > durationTarget ? (track->elapsed - durationTarget) / 1000 : 0;
+        return speedTarget + 64 * delta;
+    }
     case (STOPPING):
-        return track_adjust_speed(track, 0);
     case (IN_STATION):
         return 0;
-    case (LEAVING):
-        return track_adjust_speed(track, value);
     default:
-        return value;
+        return MAX_SPEED;
+    }
+}
+
+int track_state_adjust_speed(struct Track *track, int value)
+{
+    int target = track_state_get_speed_target(track);
+    target = value < target ? value : target;
+    if (track->duration > 0) {
+        int rate;
+        rate = (target - track->speed) * track->timings.sleepTime / track->duration;
+        return track->speed + rate < 0 ? 0 : (track->speed + rate > MAX_SPEED ? MAX_SPEED : track->speed + rate);
+    } else {
+        return target;
     }
 }
 
@@ -341,23 +358,18 @@ int track_update(struct Track *track)
     } else if (track->state == APPROACHING
                && ((position_input_isTriggered(&track->positions, CLOSE_1) && track->isForward) ||
                    (position_input_isTriggered(&track->positions, CLOSE_2) && track->isBackward))) {
-        track->timings.decDuration = timings_adjust_duration(track->timings.decDuration,
-                                                          track->timings.decTarget, track->elapsed);
-        ESP_LOGI("Position", "%s: adjust approaching duration %d", track->label, track->timings.decDuration);
         track_set_state(track, PASSING_BY);
+        ESP_LOGI("Position", "%s: train breaks for the station in %d ms", track->label, track->elapsed);
+        ESP_LOGI("Position", "%s: adjust approaching duration %d", track->label, track->timings.decDuration);
         ESP_LOGI("Position", "%s: train passing by the station (%d)", track->label, track->count);
     } else if (track->state == PASSING_BY
                && ((position_input_isTriggered(&track->positions, CLOSE_2) && track->isForward) ||
                    (position_input_isTriggered(&track->positions, CLOSE_1) && track->isBackward))) {
         if (track->count % track->timings.stopCount) {
             track_set_state(track, LEAVING);
-            track->timings.passingSpeed = timings_adjust_speed(track->timings.passingSpeed,
-                                                               track->timings.passingDuration, track->elapsed, 3072);
             ESP_LOGI("Position", "%s: adjust passing speed %d", track->label, track->timings.passingSpeed);
         } else {
             track_set_state(track, STOPPING);
-            track->timings.stationSpeed = timings_adjust_speed(track->timings.stationSpeed,
-                                                               track->timings.stationDuration, track->elapsed, 2048);
             ESP_LOGI("Position", "%s: adjust station speed %d", track->label, track->timings.stationSpeed);
         }
         ESP_LOGI("Position", "%s: train at platform end (in %d ms)", track->label, track->elapsed);
@@ -373,7 +385,7 @@ int track_update(struct Track *track)
         ESP_LOGI("Position", "%s: train has done %d passings", track->label, track->count);
     }
 
-    value = track_adjust_state_speed(track, value);
+    value = track_state_adjust_speed(track, value);
 
     if (track->duration > 0 && (track->isBackward || track->isForward))
         track->duration -= track->timings.sleepTime;
