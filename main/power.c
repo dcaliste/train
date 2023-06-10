@@ -406,6 +406,66 @@ int track_update(struct Track *track)
     return isUpdated;
 }
 
+void esp1_set_pin_layout(struct Track *trackA, struct Track *trackB,
+                         const struct System *system, const struct Timings timings)
+{
+    struct SpeedInput command;
+    struct PWMOutput pwm;
+    struct PositionInput positions;
+    command.variablePin = ADC_CHANNEL_4;
+    command.forwardPin  = GPIO_NUM_25;
+    command.backwardPin = GPIO_NUM_26;
+    pwm.enable = GPIO_NUM_5;
+    pwm.pwm1 = GPIO_NUM_19;
+    pwm.pwm2 = GPIO_NUM_18;
+    positions.far1 = GPIO_NUM_35;
+    positions.far2 = GPIO_NUM_36;
+    positions.close1 = GPIO_NUM_34;
+    positions.close2 = GPIO_NUM_39;
+    track_new(trackA, "long track", system, command, pwm, positions, timings);
+    command.variablePin = ADC_CHANNEL_5;
+    command.forwardPin  = GPIO_NUM_27;
+    command.backwardPin = GPIO_NUM_14;
+    pwm.enable = GPIO_NUM_4;
+    pwm.pwm1 = GPIO_NUM_17;
+    pwm.pwm2 = GPIO_NUM_16;
+    positions.far1 = GPIO_NUM_NC; //GPIO_NUM_22;
+    positions.far2 = GPIO_NUM_NC; //GPIO_NUM_1;
+    positions.close1 = GPIO_NUM_NC; //GPIO_NUM_3;
+    positions.close2 = GPIO_NUM_NC; //GPIO_NUM_21;
+    track_new(trackB, "small track", system, command, pwm, positions, timings);
+}
+
+void esp2_set_pin_layout(struct Track *trackA, struct Track *trackB,
+                         const struct System *system, const struct Timings timings)
+{
+    struct SpeedInput command;
+    struct PWMOutput pwm;
+    struct PositionInput positions;
+    command.variablePin = ADC_CHANNEL_4;
+    command.forwardPin  = GPIO_NUM_25;
+    command.backwardPin = GPIO_NUM_26;
+    pwm.enable = GPIO_NUM_5;
+    pwm.pwm1 = GPIO_NUM_19;
+    pwm.pwm2 = GPIO_NUM_18;
+    positions.far1 = GPIO_NUM_NC; //GPIO_NUM_35;
+    positions.far2 = GPIO_NUM_36;
+    positions.close1 = GPIO_NUM_34;
+    positions.close2 = GPIO_NUM_39;
+    track_new(trackA, "eight track", system, command, pwm, positions, timings);
+    command.variablePin = ADC_CHANNEL_5;
+    command.forwardPin  = GPIO_NUM_27;
+    command.backwardPin = GPIO_NUM_14;
+    pwm.enable = GPIO_NUM_4;
+    pwm.pwm1 = GPIO_NUM_17;
+    pwm.pwm2 = GPIO_NUM_16;
+    positions.far1 = GPIO_NUM_NC; //GPIO_NUM_22;
+    positions.far2 = GPIO_NUM_NC; //GPIO_NUM_1;
+    positions.close1 = GPIO_NUM_3;
+    positions.close2 = GPIO_NUM_21;
+    track_new(trackB, "internal loop", system, command, pwm, positions, timings);
+}
+
 void app_main(void)
 {
     /* Debug onboard led */
@@ -426,33 +486,11 @@ void app_main(void)
     timings.breakDuration = 300;    // Stopping duration
     timings.stopDuration = 8000;    // Time spent on platform
     timings.stopCount = 3;          // Number of passing in station before a stop
+    timings.decDuration = timings.decTarget;
 
-    struct SpeedInput command;
-    struct PWMOutput pwm;
-    struct PositionInput positions;
     struct Track trackA, trackB;
-    command.variablePin = ADC_CHANNEL_4;
-    command.forwardPin  = GPIO_NUM_25;
-    command.backwardPin = GPIO_NUM_26;
-    pwm.enable = GPIO_NUM_5;
-    pwm.pwm1 = GPIO_NUM_19;
-    pwm.pwm2 = GPIO_NUM_18;
-    positions.far1 = GPIO_NUM_35;
-    positions.far2 = GPIO_NUM_NC; //GPIO_NUM_36;
-    positions.close1 = GPIO_NUM_34;
-    positions.close2 = GPIO_NUM_39;
-    track_new(&trackA, "track A", &system, command, pwm, positions, timings);
-    command.variablePin = ADC_CHANNEL_5;
-    command.forwardPin  = GPIO_NUM_27;
-    command.backwardPin = GPIO_NUM_14;
-    pwm.enable = GPIO_NUM_4;
-    pwm.pwm1 = GPIO_NUM_17;
-    pwm.pwm2 = GPIO_NUM_16;
-    positions.far1 = GPIO_NUM_NC; //GPIO_NUM_22;
-    positions.far2 = GPIO_NUM_NC; //GPIO_NUM_1;
-    positions.close1 = GPIO_NUM_NC; //GPIO_NUM_3;
-    positions.close2 = GPIO_NUM_NC; //GPIO_NUM_21;
-    track_new(&trackB, "track B", &system, command, pwm, positions, timings);
+    esp1_set_pin_layout(&trackA, &trackB, &system, timings);
+    // esp2_set_pin_layout(&trackA, &trackB, &system, timings);
 
     system_start(&system);
     while (1) {
