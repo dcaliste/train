@@ -1,12 +1,252 @@
+#include <string.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
+/* #include "driver/gptimer.h" */
 #include "driver/mcpwm_timer.h"
 #include "driver/mcpwm_oper.h"
 #include "driver/mcpwm_cmpr.h"
 #include "driver/mcpwm_gen.h"
 #include "esp_log.h"
 #include "esp_adc/adc_oneshot.h"
+
+#include "nvs.h"
+#include "nvs_flash.h"
+#include "esp_bt.h"
+#include "esp_bt_main.h"
+#include "esp_gap_bt_api.h"
+#include "esp_bt_device.h"
+#include "esp_sdp_api.h"
+#include "esp_spp_api.h"
+
+#define MAX_SPP_CLIENTS 5
+static uint32_t sppClients[MAX_SPP_CLIENTS];
+
+struct BtPayload {
+    int len;
+    uint8_t *data;
+};
+static struct BtPayload sppPayload[MAX_SPP_CLIENTS];
+
+struct BtPayload* bt_payload(uint32_t handle)
+{
+    for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
+        if (sppClients[i] == handle) {
+            return sppPayload + i;
+        }
+    }
+    ESP_LOGI("Bluetooth", "unknown handle: %ld", handle);
+    return 0;
+}
+
+#define MAX_SPP_SOURCE 256
+struct BtSource {
+    int len;
+    uint8_t data[MAX_SPP_SOURCE];
+};
+struct BtSource capabilitiesFrame;
+
+int bt_source_equals(struct BtSource *a, struct BtSource *b)
+{
+    if (a->len != b->len) {
+        return 0;
+    }
+
+    for (int i = 0; i < a->len; i++) {
+        if (a->data[i] != b->data[i]) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+void bt_source_send_all(struct BtSource *source)
+{
+    for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
+        if (sppClients[i] != 65535) {
+            if (!sppPayload[i].len) {
+                sppPayload[i].data = source->data;
+                sppPayload[i].len = source->len;
+                ESP_ERROR_CHECK(esp_spp_write(sppClients[i],
+                                              source->len, source->data));
+            } else {
+                ESP_LOGI("Bluetooth", "dropping frame.");
+            }
+        }
+    }
+}
+
+void bt_source_send_new(uint32_t handle, struct BtSource *source)
+{
+    for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
+        if (sppClients[i] == 65535) {
+            sppClients[i] = handle;
+            sppPayload[i].data = source->data;
+            sppPayload[i].len = source->len;
+            ESP_ERROR_CHECK(esp_spp_write(sppClients[i],
+                                          source->len, source->data));
+            return;
+        }
+    }
+}
+
+enum FrameType {
+                UNSUPPORTED,
+                CAPABILITIES,
+                TRACK_STATE
+};
+
+int bt_copy(struct BtSource *at, uint8_t *data, int len)
+{
+    if (at->len + len < MAX_SPP_SOURCE) {
+        for (int i = 0; i < len; i++) {
+            at->data[at->len + i] = data[i];
+        }
+        at->len += len;
+        return len;
+    } else {
+        return -1;
+    }
+}
+int bt_pack_start(struct BtSource *at, enum FrameType type)
+{
+    at->len = 0;
+    return bt_copy(at, (uint8_t*)&type, sizeof(enum FrameType) / sizeof(uint8_t));
+}
+int bt_pack_int(struct BtSource *at, int value)
+{
+    return bt_copy(at, (uint8_t*)&value, sizeof(int) / sizeof(uint8_t));
+}
+int bt_pack_str(struct BtSource *at, const char *str)
+{
+    return bt_copy(at, (uint8_t*)str, (strlen(str) + 1) * sizeof(char) / sizeof(uint8_t));
+}
+
+static const uint8_t UUID_SPP[] = {0x00, 0x00, 0x11, 0x01, 0x00, 0x00, 0x10, 0x00,
+                                   0x80, 0x00, 0x00, 0x80, 0x5F, 0x9B, 0x34, 0xFB};
+static char *sdp_service_name = "Train supervision";
+static void bt_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
+{
+    switch (event) {
+    case (ESP_SPP_INIT_EVT):
+        ESP_LOGI("Bluetooth", "SPP initialisation status: %d", param->init.status);
+        if (param->init.status == ESP_SPP_SUCCESS) {
+            ESP_ERROR_CHECK(esp_spp_start_srv(ESP_SPP_SEC_NONE, ESP_SPP_ROLE_SLAVE,
+                                              0, "Train supervisor"));
+        }
+        break;
+    case (ESP_SPP_UNINIT_EVT):
+        ESP_LOGI("Bluetooth", "SPP finalisation status: %d", param->uninit.status);
+        break;
+    case (ESP_SPP_START_EVT): {
+        esp_bluetooth_sdp_record_t record = {0};
+        ESP_LOGI("Bluetooth", "SPP server started status: %d, channel: %d",
+                 param->start.status, param->start.scn);
+        record.hdr.type = ESP_SDP_TYPE_RAW;
+        record.hdr.uuid.len = sizeof(UUID_SPP);
+        memcpy(record.hdr.uuid.uuid.uuid128, UUID_SPP, sizeof(UUID_SPP));
+        record.hdr.service_name_length = strlen(sdp_service_name) + 1;
+        record.hdr.service_name = sdp_service_name;
+        record.hdr.rfcomm_channel_number = param->start.scn;
+        record.hdr.l2cap_psm = -1;
+        record.hdr.profile_version = 1;
+        esp_sdp_create_record(&record);
+
+        for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
+            sppClients[i] = 65535;
+            sppPayload[i].len = 0;
+            sppPayload[i].data = 0;
+        }
+        break;
+    }
+    case (ESP_SPP_CLOSE_EVT):
+        ESP_LOGI("Bluetooth", "SPP server disconnection status: %d", param->close.status);
+        for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
+            if (sppClients[i] == param->close.handle) {
+                sppClients[i] = 65535;
+                sppPayload[i].len = 0;
+                sppPayload[i].data = 0;
+                break;
+            }
+        }        
+        break;
+    case (ESP_SPP_SRV_OPEN_EVT):
+        ESP_LOGI("Bluetooth", "SPP server connection status: %d, address: "ESP_BD_ADDR_STR,
+                 param->srv_open.status, param->srv_open.rem_bda[0], param->srv_open.rem_bda[1],
+                 param->srv_open.rem_bda[2], param->srv_open.rem_bda[3],
+                 param->srv_open.rem_bda[4], param->srv_open.rem_bda[5]);
+        bt_source_send_new(param->srv_open.handle, &capabilitiesFrame);
+        break;
+    case (ESP_SPP_SRV_STOP_EVT):
+        ESP_LOGI("Bluetooth", "SPP server disconnection status: %d, channel: %d",
+                 param->srv_stop.status, param->srv_stop.scn);
+        break;
+    case (ESP_SPP_DATA_IND_EVT):
+        ESP_LOGI("Bluetooth", "SPP read status: %d, length: %d",
+                 param->data_ind.status, param->data_ind.len);
+        break;
+    case (ESP_SPP_CONG_EVT): {
+        ESP_LOGI("Bluetooth", "SPP congestion status: %d, congestion: %d",
+                 param->cong.status, param->cong.cong);
+        struct BtPayload *payload = bt_payload(param->cong.handle);
+        if (payload && !param->cong.cong && payload->len) {
+            ESP_ERROR_CHECK(esp_spp_write(param->cong.handle,
+                                          payload->len,
+                                          payload->data));
+        }
+        break;
+    }
+    case (ESP_SPP_WRITE_EVT): {
+        ESP_LOGI("Bluetooth", "SPP write status: %d, length: %d",
+                 param->write.status, param->write.len);
+        struct BtPayload *payload = bt_payload(param->write.handle);
+        if (payload) {
+            if (param->write.len < payload->len) {
+                if (!param->write.cong) {
+                    payload->len -= param->write.len;
+                    payload->data += param->write.len;
+                    ESP_ERROR_CHECK(esp_spp_write(param->write.handle,
+                                                  payload->len,
+                                                  payload->data));
+                } else {
+                    ESP_LOGI("Bluetooth", "SPP write congestion.");
+                }
+            } else {
+                payload->len = 0;
+                payload->data = 0;
+            }
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+static void sdp_callback(esp_sdp_cb_event_t event, esp_sdp_cb_param_t *param)
+{
+    switch (event) {
+    case ESP_SDP_INIT_EVT:
+        ESP_LOGI("Bluetooth", "SDP initialisation status: %d", param->init.status);
+        break;
+    case ESP_SDP_DEINIT_EVT:
+    case ESP_SDP_SEARCH_COMP_EVT:
+    case ESP_SDP_CREATE_RECORD_COMP_EVT: {
+        ESP_LOGI("Bluetooth", "SDP new record status: %d", param->create_record.status);
+        if (param->create_record.status == ESP_SDP_SUCCESS) {
+            esp_bt_dev_set_device_name("ESP train");
+            esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+        }
+    }
+    case ESP_SDP_REMOVE_RECORD_COMP_EVT:
+        break;
+    default:
+        ESP_LOGI("Bluetooth", "Invalid SDP event: %d", event);
+        break;
+    }
+}
 
 struct System {
     adc_oneshot_unit_handle_t adc;
@@ -39,6 +279,33 @@ void system_new(struct System *system)
     };
     ESP_ERROR_CHECK(mcpwm_new_operator(&operatorCfg, &system->pwm));
     ESP_ERROR_CHECK(mcpwm_operator_connect_timer(system->pwm, system->timer));
+
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_BLE));
+    
+    esp_bt_controller_config_t btCfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_bt_controller_init(&btCfg));
+    ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT));
+
+    ESP_ERROR_CHECK(esp_bluedroid_init());
+    ESP_ERROR_CHECK(esp_bluedroid_enable());
+
+    ESP_ERROR_CHECK(esp_sdp_register_callback(sdp_callback));
+    ESP_ERROR_CHECK(esp_sdp_init());
+
+    ESP_ERROR_CHECK(esp_spp_register_callback(bt_callback));
+    esp_spp_cfg_t sppCfg = {
+        .mode = ESP_SPP_MODE_CB,
+        .enable_l2cap_ertm = 0,
+        .tx_buffer_size = 0
+    };
+    ESP_ERROR_CHECK(esp_spp_enhanced_init(&sppCfg));
 };
 
 void system_free(struct System *system)
@@ -46,6 +313,12 @@ void system_free(struct System *system)
     ESP_ERROR_CHECK(adc_oneshot_del_unit(system->adc));
     ESP_ERROR_CHECK(mcpwm_del_operator(system->pwm));
     ESP_ERROR_CHECK(mcpwm_del_timer(system->timer));
+    ESP_ERROR_CHECK(esp_spp_stop_srv());
+    ESP_ERROR_CHECK(esp_spp_deinit());
+    ESP_ERROR_CHECK(esp_bluedroid_disable());
+    ESP_ERROR_CHECK(esp_bluedroid_deinit());
+    ESP_ERROR_CHECK(esp_bt_controller_disable());
+    ESP_ERROR_CHECK(esp_bt_controller_deinit());
 }
 
 void system_start(struct System *system)
@@ -105,7 +378,6 @@ void pwm_output_setup(struct PWMOutput *pwm, const struct System *system)
     ESP_ERROR_CHECK(gpio_set_level(pwm->pwm1, 0));
     ESP_ERROR_CHECK(gpio_set_direction(pwm->pwm2, GPIO_MODE_OUTPUT));
     ESP_ERROR_CHECK(gpio_set_level(pwm->pwm2, 0));
-
 }
 
 struct PositionInput {
@@ -198,7 +470,13 @@ enum States {
              LEAVING
 };
 
+int bt_pack_track_state(struct BtSource *at, enum States state)
+{
+    return bt_copy(at, (uint8_t*)&state, sizeof(enum States) / sizeof(uint8_t));
+}
+
 struct Track {
+    int id;
     const char* label;
 
     const struct System *system;
@@ -210,8 +488,11 @@ struct Track {
     int isForward, isBackward;
     int speed;
     int duration, elapsed;
+    /* gptimer_handle_t timer; */
     int count;
     enum States state;
+
+    struct BtSource stateFrame;
 };
 
 void track_new(struct Track *track, const char *label,
@@ -221,6 +502,9 @@ void track_new(struct Track *track, const char *label,
                const struct PositionInput positions,
                const struct Timings timings)
 {
+    static int id = 0;
+
+    track->id = id++;
     track->label = label;
 
     track->system = system;
@@ -240,14 +524,6 @@ void track_new(struct Track *track, const char *label,
     track->isBackward = 0;
     track->speed = 0;
     track->duration = 0;
-    /* gptimer_config_t timerCfg = */
-    /*     { */
-    /*      .clk_src = GPTIMER_CLK_SRC_DEFAULT, */
-    /*      .direction = GPTIMER_COUNT_DOWN, */
-    /*      .resolution_hz = 1000000, */
-    /*     }; */
-    /* ESP_ERROR_CHECK(gptimer_new_timer(&timerCfg, &track->timer)); */
-    /* ESP_ERROR_CHECK(gptimer_enable(track->timer)); */
     track->count = 0;
     track->state = SOMEWHERE;
 }
@@ -340,6 +616,21 @@ int track_state_adjust_speed(struct Track *track, int value)
     }
 }
 
+int track_update_frame(struct Track *track)
+{
+    struct BtSource old = track->stateFrame;
+
+    bt_pack_start(&track->stateFrame, TRACK_STATE);
+    bt_pack_int(&track->stateFrame, track->id);
+    bt_pack_int(&track->stateFrame, track->isForward);
+    bt_pack_int(&track->stateFrame, track->isBackward);
+    bt_pack_int(&track->stateFrame, track->speed);
+    bt_pack_int(&track->stateFrame, track->count);
+    bt_pack_track_state(&track->stateFrame, track->state);
+
+    return !bt_source_equals(&old, &track->stateFrame);
+}
+
 int track_update(struct Track *track)
 {
     int value;
@@ -403,6 +694,11 @@ int track_update(struct Track *track)
     if (isUpdated) {
         ESP_LOGI("Power", "%s: PWM updated value: %d", track->label, value);
     }
+
+    if (track_update_frame(track)) {
+        bt_source_send_all(&track->stateFrame);
+    }
+    
     return isUpdated;
 }
 
@@ -429,10 +725,10 @@ void esp1_set_pin_layout(struct Track *trackA, struct Track *trackB,
     pwm.enable = GPIO_NUM_4;
     pwm.pwm1 = GPIO_NUM_17;
     pwm.pwm2 = GPIO_NUM_16;
-    positions.far1 = GPIO_NUM_NC; //GPIO_NUM_22;
-    positions.far2 = GPIO_NUM_NC; //GPIO_NUM_1;
-    positions.close1 = GPIO_NUM_NC; //GPIO_NUM_3;
-    positions.close2 = GPIO_NUM_NC; //GPIO_NUM_21;
+    positions.far1 = GPIO_NUM_NC;
+    positions.far2 = GPIO_NUM_NC;
+    positions.close1 = GPIO_NUM_NC;
+    positions.close2 = GPIO_NUM_NC;
     track_new(trackB, "small track", system, command, pwm, positions, timings);
 }
 
@@ -459,11 +755,41 @@ void esp2_set_pin_layout(struct Track *trackA, struct Track *trackB,
     pwm.enable = GPIO_NUM_4;
     pwm.pwm1 = GPIO_NUM_17;
     pwm.pwm2 = GPIO_NUM_16;
-    positions.far1 = GPIO_NUM_NC; //GPIO_NUM_22;
-    positions.far2 = GPIO_NUM_NC; //GPIO_NUM_1;
-    positions.close1 = GPIO_NUM_3;
-    positions.close2 = GPIO_NUM_21;
+    positions.far1 = GPIO_NUM_NC; //GPIO_NUM_15;
+    positions.far2 = GPIO_NUM_23;
+    positions.close1 = GPIO_NUM_21;
+    positions.close2 = GPIO_NUM_22;
     track_new(trackB, "internal loop", system, command, pwm, positions, timings);
+}
+
+void test_set_pin_layout(struct Track *trackA, struct Track *trackB,
+                         const struct System *system, const struct Timings timings)
+{
+    struct SpeedInput command;
+    struct PWMOutput pwm;
+    struct PositionInput positions;
+    command.variablePin = ADC_CHANNEL_4;
+    command.forwardPin  = GPIO_NUM_25;
+    command.backwardPin = GPIO_NUM_26;
+    pwm.enable = GPIO_NUM_5;
+    pwm.pwm1 = GPIO_NUM_19;
+    pwm.pwm2 = GPIO_NUM_18;
+    positions.far1 = GPIO_NUM_NC;
+    positions.far2 = GPIO_NUM_NC;
+    positions.close1 = GPIO_NUM_NC;
+    positions.close2 = GPIO_NUM_NC;
+    track_new(trackA, "first track", system, command, pwm, positions, timings);
+    command.variablePin = ADC_CHANNEL_5;
+    command.forwardPin  = GPIO_NUM_27;
+    command.backwardPin = GPIO_NUM_14;
+    pwm.enable = GPIO_NUM_4;
+    pwm.pwm1 = GPIO_NUM_17;
+    pwm.pwm2 = GPIO_NUM_16;
+    positions.far1 = GPIO_NUM_NC;
+    positions.far2 = GPIO_NUM_NC;
+    positions.close1 = GPIO_NUM_NC;
+    positions.close2 = GPIO_NUM_NC;
+    track_new(trackB, "second track", system, command, pwm, positions, timings);
 }
 
 void app_main(void)
@@ -489,8 +815,18 @@ void app_main(void)
     timings.decDuration = timings.decTarget;
 
     struct Track trackA, trackB;
-    esp1_set_pin_layout(&trackA, &trackB, &system, timings);
-    // esp2_set_pin_layout(&trackA, &trackB, &system, timings);
+    //esp1_set_pin_layout(&trackA, &trackB, &system, timings);
+    //esp2_set_pin_layout(&trackA, &trackB, &system, timings);
+    test_set_pin_layout(&trackA, &trackB, &system, timings);
+
+    bt_pack_start(&capabilitiesFrame, CAPABILITIES);
+    bt_pack_int(&capabilitiesFrame, 2);
+    bt_pack_int(&capabilitiesFrame, 0);
+    bt_pack_int(&capabilitiesFrame, strlen(trackA.label));
+    bt_pack_str(&capabilitiesFrame, trackA.label);
+    bt_pack_int(&capabilitiesFrame, 1);
+    bt_pack_int(&capabilitiesFrame, strlen(trackB.label));
+    bt_pack_str(&capabilitiesFrame, trackB.label);
 
     system_start(&system);
     while (1) {
