@@ -119,6 +119,10 @@ int bt_pack_int(struct BtSource *at, int value)
 {
     return bt_copy(at, (uint8_t*)&value, sizeof(int) / sizeof(uint8_t));
 }
+int bt_pack_int16(struct BtSource *at, uint16_t value)
+{
+    return bt_copy(at, (uint8_t*)&value, sizeof(uint16_t) / sizeof(uint8_t));
+}
 int bt_pack_str(struct BtSource *at, const char *str)
 {
     return bt_copy(at, (uint8_t*)str, (strlen(str) + 1) * sizeof(char) / sizeof(uint8_t));
@@ -432,6 +436,14 @@ void position_input_log(const struct PositionInput *positions)
         ESP_LOGI("Position", "FAR_2");
 }
 
+int position_input_isEnabled(const struct PositionInput *positions)
+{
+    return (positions->close1 != GPIO_NUM_NC)
+        || (positions->close2 != GPIO_NUM_NC)
+        || (positions->far1 != GPIO_NUM_NC)
+        || (positions->far2 != GPIO_NUM_NC);
+}
+
 struct Timings {
     int sleepTime;
 
@@ -475,6 +487,11 @@ int bt_pack_track_state(struct BtSource *at, enum States state)
     return bt_copy(at, (uint8_t*)&state, sizeof(enum States) / sizeof(uint8_t));
 }
 
+enum Capabilities {
+                   SPEED_CONTROL = 1,
+                   POSITIONING   = 2
+};
+
 struct Track {
     int id;
     const char* label;
@@ -494,6 +511,8 @@ struct Track {
 
     struct BtSource stateFrame;
 };
+
+#define MAX_SPEED 4095     // Maximum speed value
 
 void track_new(struct Track *track, const char *label,
                const struct System *system,
@@ -532,6 +551,19 @@ void track_free(struct Track *track)
 {
     ESP_ERROR_CHECK(mcpwm_del_generator(track->pwm.generate));
     ESP_ERROR_CHECK(mcpwm_del_comparator(track->pwm.compare));
+}
+
+void track_setup_capabilities(struct Track *track)
+{
+    bt_pack_int(&capabilitiesFrame, track->id);
+    bt_pack_int(&capabilitiesFrame, strlen(track->label));
+    bt_pack_str(&capabilitiesFrame, track->label);
+    bt_pack_int(&capabilitiesFrame, MAX_SPEED);
+    uint16_t flag = SPEED_CONTROL;
+    if (position_input_isEnabled(&track->positions)) {
+        flag |= POSITIONING;
+    }
+    bt_pack_int16(&capabilitiesFrame, flag);
 }
 
 #define AUTO_DETECT 0      // No timer, next transition is based on detection
@@ -581,7 +613,6 @@ int track_state_is_done(const struct Track *track)
     return (track->duration <= 0);
 }
 
-#define MAX_SPEED 4095     // Maximum speed value
 int track_state_get_speed_target(struct Track *track)
 {
     switch (track->state) {
@@ -815,18 +846,14 @@ void app_main(void)
     timings.decDuration = timings.decTarget;
 
     struct Track trackA, trackB;
-    //esp1_set_pin_layout(&trackA, &trackB, &system, timings);
+    esp1_set_pin_layout(&trackA, &trackB, &system, timings);
     //esp2_set_pin_layout(&trackA, &trackB, &system, timings);
-    test_set_pin_layout(&trackA, &trackB, &system, timings);
+    //test_set_pin_layout(&trackA, &trackB, &system, timings);
 
     bt_pack_start(&capabilitiesFrame, CAPABILITIES);
     bt_pack_int(&capabilitiesFrame, 2);
-    bt_pack_int(&capabilitiesFrame, 0);
-    bt_pack_int(&capabilitiesFrame, strlen(trackA.label));
-    bt_pack_str(&capabilitiesFrame, trackA.label);
-    bt_pack_int(&capabilitiesFrame, 1);
-    bt_pack_int(&capabilitiesFrame, strlen(trackB.label));
-    bt_pack_str(&capabilitiesFrame, trackB.label);
+    track_setup_capabilities(&trackA);
+    track_setup_capabilities(&trackB);
 
     system_start(&system);
     while (1) {
