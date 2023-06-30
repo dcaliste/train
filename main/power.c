@@ -21,19 +21,24 @@
 #include "esp_spp_api.h"
 
 #define MAX_SPP_CLIENTS 5
-static uint32_t sppClients[MAX_SPP_CLIENTS];
 
 struct BtPayload {
     int len;
     uint8_t *data;
 };
-static struct BtPayload sppPayload[MAX_SPP_CLIENTS];
+
+struct SppClient {
+    uint32_t handle;
+    struct BtPayload payload;
+    int alive;
+};
+static struct SppClient sppClients[MAX_SPP_CLIENTS];
 
 struct BtPayload* bt_payload(uint32_t handle)
 {
     for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
-        if (sppClients[i] == handle) {
-            return sppPayload + i;
+        if (sppClients[i].handle == handle) {
+            return &sppClients[i].payload;
         }
     }
     ESP_LOGI("Bluetooth", "unknown handle: %ld", handle);
@@ -45,7 +50,7 @@ struct BtSource {
     int len;
     uint8_t data[MAX_SPP_SOURCE];
 };
-struct BtSource capabilitiesFrame;
+static struct BtSource capabilitiesFrame;
 
 int bt_source_equals(struct BtSource *a, struct BtSource *b)
 {
@@ -65,11 +70,11 @@ int bt_source_equals(struct BtSource *a, struct BtSource *b)
 void bt_source_send_all(struct BtSource *source)
 {
     for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
-        if (sppClients[i] != 65535) {
-            if (!sppPayload[i].len) {
-                sppPayload[i].data = source->data;
-                sppPayload[i].len = source->len;
-                ESP_ERROR_CHECK(esp_spp_write(sppClients[i],
+        if (sppClients[i].handle != 65535) {
+            if (!sppClients[i].payload.len) {
+                sppClients[i].payload.data = source->data;
+                sppClients[i].payload.len = source->len;
+                ESP_ERROR_CHECK(esp_spp_write(sppClients[i].handle,
                                               source->len, source->data));
             } else {
                 ESP_LOGI("Bluetooth", "dropping frame.");
@@ -81,11 +86,12 @@ void bt_source_send_all(struct BtSource *source)
 void bt_source_send_new(uint32_t handle, struct BtSource *source)
 {
     for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
-        if (sppClients[i] == 65535) {
-            sppClients[i] = handle;
-            sppPayload[i].data = source->data;
-            sppPayload[i].len = source->len;
-            ESP_ERROR_CHECK(esp_spp_write(sppClients[i],
+        if (sppClients[i].handle == 65535) {
+            sppClients[i].handle = handle;
+            sppClients[i].payload.data = source->data;
+            sppClients[i].payload.len = source->len;
+            sppClients[i].alive = 1;
+            ESP_ERROR_CHECK(esp_spp_write(sppClients[i].handle,
                                           source->len, source->data));
             return;
         }
@@ -94,6 +100,7 @@ void bt_source_send_new(uint32_t handle, struct BtSource *source)
 
 enum FrameType {
                 UNSUPPORTED,
+                PING,
                 CAPABILITIES,
                 TRACK_STATE
 };
@@ -118,6 +125,10 @@ int bt_pack_start(struct BtSource *at, enum FrameType type)
 int bt_pack_int(struct BtSource *at, int value)
 {
     return bt_copy(at, (uint8_t*)&value, sizeof(int) / sizeof(uint8_t));
+}
+int bt_pack_int16(struct BtSource *at, uint16_t value)
+{
+    return bt_copy(at, (uint8_t*)&value, sizeof(uint16_t) / sizeof(uint8_t));
 }
 int bt_pack_str(struct BtSource *at, const char *str)
 {
@@ -155,19 +166,19 @@ static void bt_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
         esp_sdp_create_record(&record);
 
         for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
-            sppClients[i] = 65535;
-            sppPayload[i].len = 0;
-            sppPayload[i].data = 0;
+            sppClients[i].handle = 65535;
+            sppClients[i].payload.len = 0;
+            sppClients[i].payload.data = 0;
         }
         break;
     }
     case (ESP_SPP_CLOSE_EVT):
         ESP_LOGI("Bluetooth", "SPP server disconnection status: %d", param->close.status);
         for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
-            if (sppClients[i] == param->close.handle) {
-                sppClients[i] = 65535;
-                sppPayload[i].len = 0;
-                sppPayload[i].data = 0;
+            if (sppClients[i].handle == param->close.handle) {
+                sppClients[i].handle = 65535;
+                sppClients[i].payload.len = 0;
+                sppClients[i].payload.data = 0;
                 break;
             }
         }        
@@ -432,6 +443,14 @@ void position_input_log(const struct PositionInput *positions)
         ESP_LOGI("Position", "FAR_2");
 }
 
+int position_input_isEnabled(const struct PositionInput *positions)
+{
+    return (positions->close1 != GPIO_NUM_NC)
+        || (positions->close2 != GPIO_NUM_NC)
+        || (positions->far1 != GPIO_NUM_NC)
+        || (positions->far2 != GPIO_NUM_NC);
+}
+
 struct Timings {
     int sleepTime;
 
@@ -475,6 +494,11 @@ int bt_pack_track_state(struct BtSource *at, enum States state)
     return bt_copy(at, (uint8_t*)&state, sizeof(enum States) / sizeof(uint8_t));
 }
 
+enum Capabilities {
+                   SPEED_CONTROL = 1,
+                   POSITIONING   = 2
+};
+
 struct Track {
     int id;
     const char* label;
@@ -494,6 +518,8 @@ struct Track {
 
     struct BtSource stateFrame;
 };
+
+#define MAX_SPEED 4095     // Maximum speed value
 
 void track_new(struct Track *track, const char *label,
                const struct System *system,
@@ -532,6 +558,19 @@ void track_free(struct Track *track)
 {
     ESP_ERROR_CHECK(mcpwm_del_generator(track->pwm.generate));
     ESP_ERROR_CHECK(mcpwm_del_comparator(track->pwm.compare));
+}
+
+void track_setup_capabilities(struct Track *track)
+{
+    bt_pack_int(&capabilitiesFrame, track->id);
+    bt_pack_int(&capabilitiesFrame, strlen(track->label));
+    bt_pack_str(&capabilitiesFrame, track->label);
+    bt_pack_int(&capabilitiesFrame, MAX_SPEED);
+    uint16_t flag = SPEED_CONTROL;
+    if (position_input_isEnabled(&track->positions)) {
+        flag |= POSITIONING;
+    }
+    bt_pack_int16(&capabilitiesFrame, flag);
 }
 
 #define AUTO_DETECT 0      // No timer, next transition is based on detection
@@ -581,7 +620,6 @@ int track_state_is_done(const struct Track *track)
     return (track->duration <= 0);
 }
 
-#define MAX_SPEED 4095     // Maximum speed value
 int track_state_get_speed_target(struct Track *track)
 {
     switch (track->state) {
@@ -815,18 +853,14 @@ void app_main(void)
     timings.decDuration = timings.decTarget;
 
     struct Track trackA, trackB;
-    //esp1_set_pin_layout(&trackA, &trackB, &system, timings);
+    esp1_set_pin_layout(&trackA, &trackB, &system, timings);
     //esp2_set_pin_layout(&trackA, &trackB, &system, timings);
-    test_set_pin_layout(&trackA, &trackB, &system, timings);
+    //test_set_pin_layout(&trackA, &trackB, &system, timings);
 
     bt_pack_start(&capabilitiesFrame, CAPABILITIES);
     bt_pack_int(&capabilitiesFrame, 2);
-    bt_pack_int(&capabilitiesFrame, 0);
-    bt_pack_int(&capabilitiesFrame, strlen(trackA.label));
-    bt_pack_str(&capabilitiesFrame, trackA.label);
-    bt_pack_int(&capabilitiesFrame, 1);
-    bt_pack_int(&capabilitiesFrame, strlen(trackB.label));
-    bt_pack_str(&capabilitiesFrame, trackB.label);
+    track_setup_capabilities(&trackA);
+    track_setup_capabilities(&trackB);
 
     system_start(&system);
     while (1) {
