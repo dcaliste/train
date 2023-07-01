@@ -853,8 +853,8 @@ void app_main(void)
     timings.decDuration = timings.decTarget;
 
     struct Track trackA, trackB;
-    esp1_set_pin_layout(&trackA, &trackB, &system, timings);
-    //esp2_set_pin_layout(&trackA, &trackB, &system, timings);
+    //esp1_set_pin_layout(&trackA, &trackB, &system, timings);
+    esp2_set_pin_layout(&trackA, &trackB, &system, timings);
     //test_set_pin_layout(&trackA, &trackB, &system, timings);
 
     bt_pack_start(&capabilitiesFrame, CAPABILITIES);
