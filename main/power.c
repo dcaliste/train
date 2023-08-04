@@ -2,8 +2,9 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "driver/gpio.h"
-/* #include "driver/gptimer.h" */
+#include "driver/gptimer.h"
 #include "driver/mcpwm_timer.h"
 #include "driver/mcpwm_oper.h"
 #include "driver/mcpwm_cmpr.h"
@@ -51,6 +52,7 @@ struct BtSource {
     uint8_t data[MAX_SPP_SOURCE];
 };
 static struct BtSource capabilitiesFrame;
+static gptimer_handle_t pingTimer = NULL;
 
 int bt_source_equals(struct BtSource *a, struct BtSource *b)
 {
@@ -130,9 +132,57 @@ int bt_pack_int16(struct BtSource *at, uint16_t value)
 {
     return bt_copy(at, (uint8_t*)&value, sizeof(uint16_t) / sizeof(uint8_t));
 }
+int bt_pack_uint64(struct BtSource *at, uint64_t value)
+{
+    return bt_copy(at, (uint8_t*)&value, sizeof(uint64_t) / sizeof(uint8_t));
+}
 int bt_pack_str(struct BtSource *at, const char *str)
 {
     return bt_copy(at, (uint8_t*)str, (strlen(str) + 1) * sizeof(char) / sizeof(uint8_t));
+}
+
+void bt_send_ping_frame(uint64_t count)
+{
+    struct BtSource pingFrame;
+    bt_pack_start(&pingFrame, PING);
+    bt_pack_uint64(&pingFrame, count);
+    for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
+        if (sppClients[i].handle != 65535 && sppClients[i].alive) {
+            if (!sppClients[i].payload.len) {
+                ESP_LOGI("Bluetooth", "sending ping frame: %lld", count);
+                sppClients[i].payload.data = pingFrame.data;
+                sppClients[i].payload.len = pingFrame.len;
+                ESP_ERROR_CHECK(esp_spp_write(sppClients[i].handle,
+                                              pingFrame.len, pingFrame.data));
+                sppClients[i].alive = 0;
+            } else {
+                ESP_LOGI("Bluetooth", "dropping ping frame.");
+            }
+        } else if (sppClients[i].handle != 65535) {
+            ESP_LOGI("Bluetooth", "client did not respond, disconnecting.");
+            ESP_ERROR_CHECK(esp_spp_disconnect(sppClients[i].handle));
+        }
+    }
+}
+
+void bt_receive_ping_frame(uint32_t handle, uint64_t count)
+{
+    for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
+        if (sppClients[i].handle == handle && !sppClients[i].alive) {
+            ESP_LOGI("Bluetooth", "ping response: %lld", count);
+            sppClients[i].alive = 1;
+        }
+    }
+}
+
+int isPingFrame(const uint8_t *data, uint64_t *count)
+{
+    enum FrameType type = *(enum FrameType*)data;
+    ESP_LOGI("Bluetooth", "frame received: %d", type);
+    if (type == PING && count) {
+        *count = *(uint64_t*)(data + sizeof(enum FrameType));
+    }
+    return (type == PING);
 }
 
 static const uint8_t UUID_SPP[] = {0x00, 0x00, 0x11, 0x01, 0x00, 0x00, 0x10, 0x00,
@@ -181,7 +231,15 @@ static void bt_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
                 sppClients[i].payload.data = 0;
                 break;
             }
-        }        
+        }
+        int anyClient = 0;
+        for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
+            if (sppClients[i].handle != 65535)
+                anyClient = 1;
+        }
+        if (!anyClient) {
+            ESP_ERROR_CHECK(gptimer_stop(pingTimer));
+        }
         break;
     case (ESP_SPP_SRV_OPEN_EVT):
         ESP_LOGI("Bluetooth", "SPP server connection status: %d, address: "ESP_BD_ADDR_STR,
@@ -189,6 +247,7 @@ static void bt_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
                  param->srv_open.rem_bda[2], param->srv_open.rem_bda[3],
                  param->srv_open.rem_bda[4], param->srv_open.rem_bda[5]);
         bt_source_send_new(param->srv_open.handle, &capabilitiesFrame);
+        ESP_ERROR_CHECK(gptimer_start(pingTimer));
         break;
     case (ESP_SPP_SRV_STOP_EVT):
         ESP_LOGI("Bluetooth", "SPP server disconnection status: %d, channel: %d",
@@ -197,6 +256,12 @@ static void bt_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
     case (ESP_SPP_DATA_IND_EVT):
         ESP_LOGI("Bluetooth", "SPP read status: %d, length: %d",
                  param->data_ind.status, param->data_ind.len);
+        if (param->data_ind.status == ESP_SPP_SUCCESS) {
+            uint64_t ping;
+            if (isPingFrame(param->data_ind.data, &ping)) {
+                bt_receive_ping_frame(param->data_ind.handle, ping);
+            }
+        }
         break;
     case (ESP_SPP_CONG_EVT): {
         ESP_LOGI("Bluetooth", "SPP congestion status: %d, congestion: %d",
@@ -263,7 +328,17 @@ struct System {
     adc_oneshot_unit_handle_t adc;
     mcpwm_timer_handle_t timer;
     mcpwm_oper_handle_t pwm;
+    QueueHandle_t pingQueue;
 };
+
+static bool IRAM_ATTR system_ping_callback(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx)
+{
+    BaseType_t high_task_awoken = pdFALSE;
+    static uint64_t count = 0;
+    xQueueSendFromISR(((struct System*)user_ctx)->pingQueue, &count, &high_task_awoken);
+    count++;
+    return high_task_awoken == pdTRUE;
+}
 
 void system_new(struct System *system)
 {
@@ -317,6 +392,25 @@ void system_new(struct System *system)
         .tx_buffer_size = 0
     };
     ESP_ERROR_CHECK(esp_spp_enhanced_init(&sppCfg));
+
+    system->pingQueue = xQueueCreate(1, sizeof(uint64_t));
+    gptimer_config_t pingCfg = {
+        .clk_src = GPTIMER_CLK_SRC_DEFAULT,
+        .direction = GPTIMER_COUNT_UP,
+        .resolution_hz = 10000,
+    };
+    ESP_ERROR_CHECK(gptimer_new_timer(&pingCfg, &pingTimer));
+    gptimer_event_callbacks_t pingCallback = {
+        .on_alarm = system_ping_callback,
+    };
+    ESP_ERROR_CHECK(gptimer_register_event_callbacks(pingTimer, &pingCallback, system));
+    gptimer_alarm_config_t alarmCfg = {
+        .reload_count = 0, // counter will reload with 0 on alarm event
+        .alarm_count = 10000, // period = 1s @resolution 10kHz
+        .flags.auto_reload_on_alarm = true, // enable auto-reload
+    };
+    ESP_ERROR_CHECK(gptimer_enable(pingTimer));
+    ESP_ERROR_CHECK(gptimer_set_alarm_action(pingTimer, &alarmCfg));
 };
 
 void system_free(struct System *system)
@@ -324,12 +418,16 @@ void system_free(struct System *system)
     ESP_ERROR_CHECK(adc_oneshot_del_unit(system->adc));
     ESP_ERROR_CHECK(mcpwm_del_operator(system->pwm));
     ESP_ERROR_CHECK(mcpwm_del_timer(system->timer));
+    ESP_ERROR_CHECK(gptimer_stop(pingTimer));
+    ESP_ERROR_CHECK(gptimer_disable(pingTimer));
+    ESP_ERROR_CHECK(gptimer_del_timer(pingTimer));
     ESP_ERROR_CHECK(esp_spp_stop_srv());
     ESP_ERROR_CHECK(esp_spp_deinit());
     ESP_ERROR_CHECK(esp_bluedroid_disable());
     ESP_ERROR_CHECK(esp_bluedroid_deinit());
     ESP_ERROR_CHECK(esp_bt_controller_disable());
     ESP_ERROR_CHECK(esp_bt_controller_deinit());
+    if (system->pingQueue) vQueueDelete(system->pingQueue);
 }
 
 void system_start(struct System *system)
@@ -869,6 +967,10 @@ void app_main(void)
         int trackBUpdated = track_update(&trackB);
         if (trackAUpdated || trackBUpdated) {
             ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_2, 1));
+        }
+        uint64_t count;
+        if (system.pingQueue && xQueueReceive(system.pingQueue, &count, 0)) {
+            bt_send_ping_frame(count);
         }
         vTaskDelay(pdMS_TO_TICKS(timings.sleepTime));
     }
