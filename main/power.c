@@ -29,6 +29,11 @@ struct BtPayload {
     uint8_t *data;
 };
 
+struct BtCommand {
+    uint32_t handle;
+    int speed;
+};
+
 struct SppClient {
     uint32_t handle;
     struct BtPayload payload;
@@ -54,6 +59,10 @@ struct BtSource {
 };
 static struct BtSource capabilitiesFrame;
 static gptimer_handle_t pingTimer = NULL;
+
+int track_id(struct Track *track);
+uint32_t track_is_bluetooth_controlled(const struct Track *track);
+void track_set_bluetooth_controlled(struct Track *track, uint32_t handle);
 
 int bt_source_equals(struct BtSource *a, struct BtSource *b)
 {
@@ -552,6 +561,63 @@ int position_input_isEnabled(const struct PositionInput *positions)
         || (positions->far2 != GPIO_NUM_NC);
 }
 
+enum Source {
+             HARDWARE,
+             BLUETOOTH
+};
+
+struct HardwareCommand {
+    const struct System *system;
+    struct SpeedInput speed;
+};
+
+struct Command {
+    enum Source source;
+    union {
+        struct HardwareCommand hd;
+        struct BtCommand bt;
+    };
+    int speed;
+    int isForward, isBackward;
+};
+
+void command_init_hardware(struct Command *command, const struct System *system, struct SpeedInput speed)
+{
+    command->source = HARDWARE;
+    command->hd.system = system;
+    command->hd.speed = speed;
+    speed_input_setup(&command->hd.speed, system);
+}
+
+void command_init_bluetooth(struct Command *command, uint32_t handle, const struct Command *src)
+{
+    *command = *src;
+    command->source = BLUETOOTH;
+    command->bt.handle = handle;
+    command->bt.speed = command->isForward ? command->speed : -command->speed;
+}
+
+void command_update(struct Command *command)
+{
+    switch (command->source) {
+    case (HARDWARE):
+        ESP_ERROR_CHECK(adc_oneshot_read(command->hd.system->adc, command->hd.speed.variablePin, &command->speed));
+        command->speed = command->speed ? 512 + 7 * command->speed : 0;
+        command->isForward = !gpio_get_level(command->hd.speed.forwardPin);
+        command->isBackward = !gpio_get_level(command->hd.speed.backwardPin);
+        break;
+    case (BLUETOOTH):
+        command->speed = command->bt.speed > 0 ? command->bt.speed : -command->bt.speed;
+        command->isForward = command->bt.speed > 0;
+        command->isBackward = command->bt.speed < 0;
+        break;
+    default:
+        return;
+    }
+    command->isForward = command->isForward && command->speed; 
+    command->isBackward = command->isBackward && command->speed; 
+}
+
 struct Timings {
     int sleepTime;
 
@@ -605,12 +671,12 @@ struct Track {
     const char* label;
 
     const struct System *system;
-    struct SpeedInput command;
+    struct Command hdCommand, btCommand;
+    struct Command *command;
     struct PWMOutput pwm;
     struct PositionInput positions;
     struct Timings timings;
 
-    int isForward, isBackward;
     int speed;
     int duration, elapsed;
     /* gptimer_handle_t timer; */
@@ -624,7 +690,7 @@ struct Track {
 
 void track_new(struct Track *track, const char *label,
                const struct System *system,
-               const struct SpeedInput command,
+               const struct SpeedInput input,
                const struct PWMOutput pwm,
                const struct PositionInput positions,
                const struct Timings timings)
@@ -636,8 +702,9 @@ void track_new(struct Track *track, const char *label,
 
     track->system = system;
 
-    track->command = command;
-    speed_input_setup(&track->command, system);
+    track->command = &track->hdCommand;
+    command_init_hardware(&track->hdCommand, system, input);
+    bt_register_track(id, track);
 
     track->pwm = pwm;
     pwm_output_setup(&track->pwm, system);
@@ -647,8 +714,6 @@ void track_new(struct Track *track, const char *label,
 
     track->timings = timings;
 
-    track->isForward = 0;
-    track->isBackward = 0;
     track->speed = 0;
     track->duration = 0;
     track->count = 0;
@@ -659,6 +724,26 @@ void track_free(struct Track *track)
 {
     ESP_ERROR_CHECK(mcpwm_del_generator(track->pwm.generate));
     ESP_ERROR_CHECK(mcpwm_del_comparator(track->pwm.compare));
+}
+
+int track_id(struct Track *track)
+{
+    return track ? track->id : -1;
+}
+
+uint32_t track_is_bluetooth_controlled(const struct Track *track)
+{
+    return track && (track->command == &track->btCommand) ? track->btCommand.bt.handle : SPP_NO_CLIENT;
+}
+
+void track_set_bluetooth_controlled(struct Track *track, uint32_t handle)
+{
+    if (handle == SPP_NO_CLIENT) {
+        track->command = &track->hdCommand;
+    } else {
+        track->command = &track->btCommand;
+        command_init_bluetooth(&track->btCommand, handle, &track->hdCommand);
+    }
 }
 
 void track_setup_capabilities(struct Track *track)
@@ -761,8 +846,8 @@ int track_update_frame(struct Track *track)
 
     bt_pack_start(&track->stateFrame, TRACK_STATE);
     bt_pack_int(&track->stateFrame, track->id);
-    bt_pack_int(&track->stateFrame, track->isForward);
-    bt_pack_int(&track->stateFrame, track->isBackward);
+    bt_pack_int(&track->stateFrame, track->command->isForward);
+    bt_pack_int(&track->stateFrame, track->command->isBackward);
     bt_pack_int(&track->stateFrame, track->speed);
     bt_pack_int(&track->stateFrame, track->count);
     bt_pack_track_state(&track->stateFrame, track->state);
@@ -772,29 +857,24 @@ int track_update_frame(struct Track *track)
 
 int track_update(struct Track *track)
 {
-    int value;
-    ESP_ERROR_CHECK(adc_oneshot_read(track->system->adc, track->command.variablePin, &value));
-    value = value ? 512 + 7 * value : 0;
-
-    track->isForward = (value && !gpio_get_level(track->command.forwardPin));
-    track->isBackward = (value && !gpio_get_level(track->command.backwardPin));
+    command_update(track->command);
 
     position_input_log(&track->positions);
     if (track->state == SOMEWHERE
-        && ((position_input_isTriggered(&track->positions, FAR_1) && track->isForward) ||
-            (position_input_isTriggered(&track->positions, FAR_2) && track->isBackward))) {
+        && ((position_input_isTriggered(&track->positions, FAR_1) && track->command->isForward) ||
+            (position_input_isTriggered(&track->positions, FAR_2) && track->command->isBackward))) {
         track_set_state(track, APPROACHING);
         ESP_LOGI("Position", "%s: train approaching", track->label);
     } else if (track->state == APPROACHING
-               && ((position_input_isTriggered(&track->positions, CLOSE_1) && track->isForward) ||
-                   (position_input_isTriggered(&track->positions, CLOSE_2) && track->isBackward))) {
+               && ((position_input_isTriggered(&track->positions, CLOSE_1) && track->command->isForward) ||
+                   (position_input_isTriggered(&track->positions, CLOSE_2) && track->command->isBackward))) {
         track_set_state(track, PASSING_BY);
         ESP_LOGI("Position", "%s: train breaks for the station in %d ms", track->label, track->elapsed);
         ESP_LOGI("Position", "%s: adjust approaching duration %d", track->label, track->timings.decDuration);
         ESP_LOGI("Position", "%s: train passing by the station (%d)", track->label, track->count);
     } else if (track->state == PASSING_BY
-               && ((position_input_isTriggered(&track->positions, CLOSE_2) && track->isForward) ||
-                   (position_input_isTriggered(&track->positions, CLOSE_1) && track->isBackward))) {
+               && ((position_input_isTriggered(&track->positions, CLOSE_2) && track->command->isForward) ||
+                   (position_input_isTriggered(&track->positions, CLOSE_1) && track->command->isBackward))) {
         if (track->count % track->timings.stopCount) {
             track_set_state(track, LEAVING);
             ESP_LOGI("Position", "%s: adjust passing speed %d", track->label, track->timings.passingSpeed);
@@ -809,22 +889,22 @@ int track_update(struct Track *track)
     } else if (track->state == IN_STATION && track_state_is_done(track)) {
         track_set_state(track, LEAVING);
         ESP_LOGI("Position", "%s: train is departing", track->label);
-    } else if (track->state == LEAVING && track->speed >= value) {
+    } else if (track->state == LEAVING && track->speed >= track->command->speed) {
         track_set_state(track, SOMEWHERE);
         track->count += 1;
         ESP_LOGI("Position", "%s: train has done %d passings", track->label, track->count);
     }
 
-    value = track_state_adjust_speed(track, value);
-
-    if (track->duration > 0 && (track->isBackward || track->isForward))
+    if (track->duration > 0 && (track->command->isBackward || track->command->isForward))
         track->duration -= track->timings.sleepTime;
-    if (track->elapsed >= 0 && (track->isBackward || track->isForward))
+    if (track->elapsed >= 0 && (track->command->isBackward || track->command->isForward))
         track->elapsed += track->timings.sleepTime;
     
     int isUpdated = 0;
-    ESP_ERROR_CHECK(gpio_set_level(track->pwm.pwm1, track->isForward ? 1 : 0));
-    ESP_ERROR_CHECK(gpio_set_level(track->pwm.pwm2, track->isBackward ? 1 : 0));
+    ESP_ERROR_CHECK(gpio_set_level(track->pwm.pwm1, track->command->isForward ? 1 : 0));
+    ESP_ERROR_CHECK(gpio_set_level(track->pwm.pwm2, track->command->isBackward ? 1 : 0));
+
+    int value = track_state_adjust_speed(track, track->command->speed);
     if (value != track->speed) {
         isUpdated = (value >> 7 != track->speed >> 7);
         track->speed = value;
