@@ -60,6 +60,18 @@ struct BtSource {
 static struct BtSource capabilitiesFrame;
 static gptimer_handle_t pingTimer = NULL;
 
+#define MAX_TRACKS 2
+struct Track;
+static struct Track *tracks[MAX_TRACKS];
+
+void bt_register_track(int trackId, struct Track *track)
+{
+    if (trackId < 0 || trackId >= MAX_TRACKS)
+        return;
+
+    tracks[trackId] = track;
+    ESP_LOGI("Bluetooth", "registering track %d: %p", trackId, tracks[trackId]);
+}
 int track_id(struct Track *track);
 uint32_t track_is_bluetooth_controlled(const struct Track *track);
 void track_set_bluetooth_controlled(struct Track *track, uint32_t handle);
@@ -116,7 +128,12 @@ enum FrameType {
                 UNSUPPORTED,
                 PING,
                 CAPABILITIES,
-                TRACK_STATE
+                TRACK_STATE,
+                ACQUIRE_TRACK,
+                ACQUIRE_ACK,
+                RELEASE_TRACK,
+                RELEASE_ACK,
+                SPEED_COMMAND
 };
 
 int bt_copy(struct BtSource *at, uint8_t *data, int len)
@@ -197,6 +214,72 @@ int isPingFrame(const uint8_t *data, uint64_t *count)
     return (type == PING);
 }
 
+void bt_receive_acquire_frame(uint32_t handle, int trackId, struct Track *track)
+{
+    int acquire = track && (track_is_bluetooth_controlled(track) == SPP_NO_CLIENT);
+    struct BtSource ack;
+    bt_pack_start(&ack, ACQUIRE_ACK);
+    bt_pack_int(&ack, trackId);
+    bt_pack_int(&ack, acquire);
+    ESP_LOGI("Bluetooth", "acquire response for track %d: %d", trackId, acquire);
+    if (track && acquire)
+        track_set_bluetooth_controlled(track, handle);
+
+    for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
+        if (sppClients[i].handle == handle) {
+            bt_spp_send(sppClients + i, &ack);
+            return;
+        }
+    }
+}
+
+int isAcquireFrame(const uint8_t *data, int *trackId, struct Track **track)
+{
+    enum FrameType type = *(enum FrameType*)data;
+    ESP_LOGI("Bluetooth", "frame received: %d", type);
+    if (type == ACQUIRE_TRACK && track && trackId) {
+        *trackId = *(int*)(data + sizeof(enum FrameType));
+        if (*trackId >= 0 && *trackId < MAX_TRACKS)
+            *track = tracks[*trackId];
+        else
+            *track = (struct Track*)0;
+    }
+    return (type == ACQUIRE_TRACK);
+}
+
+void bt_receive_release_frame(uint32_t handle, int trackId, struct Track *track)
+{
+    int release = track && (track_is_bluetooth_controlled(track) == handle);
+    struct BtSource ack;
+    bt_pack_start(&ack, RELEASE_ACK);
+    bt_pack_int(&ack, trackId);
+    bt_pack_int(&ack, release);
+    ESP_LOGI("Bluetooth", "release response for track %d: %d", trackId, release);
+    if (track && release)
+        track_set_bluetooth_controlled(track, SPP_NO_CLIENT);
+
+    for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
+        if (sppClients[i].handle == handle) {
+            bt_spp_send(sppClients + i, &ack);
+            return;
+        }
+    }
+}
+
+int isReleaseFrame(const uint8_t *data, int *trackId, struct Track **track)
+{
+    enum FrameType type = *(enum FrameType*)data;
+    ESP_LOGI("Bluetooth", "frame received: %d", type);
+    if (type == RELEASE_TRACK && track && trackId) {
+        *trackId = *(int*)(data + sizeof(enum FrameType));
+        if (*trackId >= 0 && *trackId < MAX_TRACKS)
+            *track = tracks[*trackId];
+        else
+            *track = (struct Track*)0;
+    }
+    return (type == RELEASE_TRACK);
+}
+
 static const uint8_t UUID_SPP[] = {0x00, 0x00, 0x11, 0x01, 0x00, 0x00, 0x10, 0x00,
                                    0x80, 0x00, 0x00, 0x80, 0x5F, 0x9B, 0x34, 0xFB};
 static char *sdp_service_name = "Train supervision";
@@ -244,6 +327,11 @@ static void bt_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
                 break;
             }
         }
+        for (int i = 0; i < MAX_TRACKS; i++) {
+            if (tracks[i] && (track_is_bluetooth_controlled(tracks[i]) == param->close.handle)) {
+                track_set_bluetooth_controlled(tracks[i], SPP_NO_CLIENT);
+            }
+        }
         int anyClient = 0;
         for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
             if (sppClients[i].handle != SPP_NO_CLIENT)
@@ -270,8 +358,14 @@ static void bt_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
                  param->data_ind.status, param->data_ind.len);
         if (param->data_ind.status == ESP_SPP_SUCCESS) {
             uint64_t ping;
+            int trackId;
+            struct Track *track;
             if (isPingFrame(param->data_ind.data, &ping)) {
                 bt_receive_ping_frame(param->data_ind.handle, ping);
+            } else if (isAcquireFrame(param->data_ind.data, &trackId, &track)) {
+                bt_receive_acquire_frame(param->data_ind.handle, trackId, track);
+            } else if (isReleaseFrame(param->data_ind.data, &trackId, &track)) {
+                bt_receive_release_frame(param->data_ind.handle, trackId, track);
             }
         }
         break;
@@ -404,6 +498,9 @@ void system_new(struct System *system)
         .tx_buffer_size = 0
     };
     ESP_ERROR_CHECK(esp_spp_enhanced_init(&sppCfg));
+
+    for (int i = 0; i < MAX_TRACKS; i++)
+        tracks[i] = (struct Track*)0;
 
     system->pingQueue = xQueueCreate(1, sizeof(uint64_t));
     gptimer_config_t pingCfg = {
@@ -704,7 +801,7 @@ void track_new(struct Track *track, const char *label,
 
     track->command = &track->hdCommand;
     command_init_hardware(&track->hdCommand, system, input);
-    bt_register_track(id, track);
+    bt_register_track(track->id, track);
 
     track->pwm = pwm;
     pwm_output_setup(&track->pwm, system);
@@ -733,7 +830,7 @@ int track_id(struct Track *track)
 
 uint32_t track_is_bluetooth_controlled(const struct Track *track)
 {
-    return track && (track->command == &track->btCommand) ? track->btCommand.bt.handle : SPP_NO_CLIENT;
+    return (track && (track->command == &track->btCommand)) ? track->btCommand.bt.handle : SPP_NO_CLIENT;
 }
 
 void track_set_bluetooth_controlled(struct Track *track, uint32_t handle)
