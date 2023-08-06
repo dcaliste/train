@@ -22,6 +22,7 @@
 #include "esp_spp_api.h"
 
 #define MAX_SPP_CLIENTS 5
+#define SPP_NO_CLIENT 65535
 
 struct BtPayload {
     int len;
@@ -69,18 +70,22 @@ int bt_source_equals(struct BtSource *a, struct BtSource *b)
     return 1;
 }
 
+void bt_spp_send(struct SppClient *spp, struct BtSource *source)
+{
+    if (!spp->payload.len) {
+        spp->payload.data = source->data;
+        spp->payload.len = source->len;
+        ESP_ERROR_CHECK(esp_spp_write(spp->handle, source->len, source->data));
+    } else {
+        ESP_LOGI("Bluetooth", "dropping frame.");
+    }
+}
+
 void bt_source_send_all(struct BtSource *source)
 {
     for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
-        if (sppClients[i].handle != 65535) {
-            if (!sppClients[i].payload.len) {
-                sppClients[i].payload.data = source->data;
-                sppClients[i].payload.len = source->len;
-                ESP_ERROR_CHECK(esp_spp_write(sppClients[i].handle,
-                                              source->len, source->data));
-            } else {
-                ESP_LOGI("Bluetooth", "dropping frame.");
-            }
+        if (sppClients[i].handle != SPP_NO_CLIENT) {
+            bt_spp_send(sppClients + i, source);
         }
     }
 }
@@ -88,13 +93,11 @@ void bt_source_send_all(struct BtSource *source)
 void bt_source_send_new(uint32_t handle, struct BtSource *source)
 {
     for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
-        if (sppClients[i].handle == 65535) {
+        if (sppClients[i].handle == SPP_NO_CLIENT) {
             sppClients[i].handle = handle;
-            sppClients[i].payload.data = source->data;
-            sppClients[i].payload.len = source->len;
             sppClients[i].alive = 1;
-            ESP_ERROR_CHECK(esp_spp_write(sppClients[i].handle,
-                                          source->len, source->data));
+            sppClients[i].payload.len = 0;
+            bt_spp_send(sppClients + i, source);
             return;
         }
     }
@@ -147,7 +150,7 @@ void bt_send_ping_frame(uint64_t count)
     bt_pack_start(&pingFrame, PING);
     bt_pack_uint64(&pingFrame, count);
     for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
-        if (sppClients[i].handle != 65535 && sppClients[i].alive) {
+        if (sppClients[i].handle != SPP_NO_CLIENT && sppClients[i].alive) {
             if (!sppClients[i].payload.len) {
                 ESP_LOGI("Bluetooth", "sending ping frame: %lld", count);
                 sppClients[i].payload.data = pingFrame.data;
@@ -158,7 +161,7 @@ void bt_send_ping_frame(uint64_t count)
             } else {
                 ESP_LOGI("Bluetooth", "dropping ping frame.");
             }
-        } else if (sppClients[i].handle != 65535) {
+        } else if (sppClients[i].handle != SPP_NO_CLIENT) {
             ESP_LOGI("Bluetooth", "client did not respond, disconnecting.");
             ESP_ERROR_CHECK(esp_spp_disconnect(sppClients[i].handle));
         }
@@ -216,7 +219,7 @@ static void bt_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
         esp_sdp_create_record(&record);
 
         for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
-            sppClients[i].handle = 65535;
+            sppClients[i].handle = SPP_NO_CLIENT;
             sppClients[i].payload.len = 0;
             sppClients[i].payload.data = 0;
         }
@@ -226,7 +229,7 @@ static void bt_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
         ESP_LOGI("Bluetooth", "SPP server disconnection status: %d", param->close.status);
         for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
             if (sppClients[i].handle == param->close.handle) {
-                sppClients[i].handle = 65535;
+                sppClients[i].handle = SPP_NO_CLIENT;
                 sppClients[i].payload.len = 0;
                 sppClients[i].payload.data = 0;
                 break;
@@ -234,7 +237,7 @@ static void bt_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
         }
         int anyClient = 0;
         for (int i = 0; i < MAX_SPP_CLIENTS; i++) {
-            if (sppClients[i].handle != 65535)
+            if (sppClients[i].handle != SPP_NO_CLIENT)
                 anyClient = 1;
         }
         if (!anyClient) {
