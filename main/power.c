@@ -1115,7 +1115,7 @@ void esp2_set_pin_layout(struct Track *trackA, struct Track *trackB,
     pwm.enable = GPIO_NUM_5;
     pwm.pwm1 = GPIO_NUM_19;
     pwm.pwm2 = GPIO_NUM_18;
-    positions.far1 = GPIO_NUM_NC; //GPIO_NUM_35;
+    positions.far1 = GPIO_NUM_35;
     positions.far2 = GPIO_NUM_36;
     positions.close1 = GPIO_NUM_34;
     positions.close2 = GPIO_NUM_39;
@@ -1126,7 +1126,7 @@ void esp2_set_pin_layout(struct Track *trackA, struct Track *trackB,
     pwm.enable = GPIO_NUM_4;
     pwm.pwm1 = GPIO_NUM_17;
     pwm.pwm2 = GPIO_NUM_16;
-    positions.far1 = GPIO_NUM_NC; //GPIO_NUM_15;
+    positions.far1 = GPIO_NUM_15;
     positions.far2 = GPIO_NUM_23;
     positions.close1 = GPIO_NUM_21;
     positions.close2 = GPIO_NUM_22;
