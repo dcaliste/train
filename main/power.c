@@ -468,7 +468,7 @@ static void sdp_callback(esp_sdp_cb_event_t event, esp_sdp_cb_param_t *param)
     case ESP_SDP_CREATE_RECORD_COMP_EVT: {
         ESP_LOGI("Bluetooth", "SDP new record status: %d", param->create_record.status);
         if (param->create_record.status == ESP_SDP_SUCCESS) {
-            esp_bt_dev_set_device_name("ESP train");
+            esp_bt_gap_set_device_name("ESP train");
             esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
         }
     }
@@ -604,7 +604,7 @@ void speed_input_setup(const struct SpeedInput *command, const struct System *sy
     adc_oneshot_chan_cfg_t config =
         {
          .bitwidth = ADC_BITWIDTH_9,
-         .atten = ADC_ATTEN_DB_11,
+         .atten = ADC_ATTEN_DB_12,
         };
     ESP_ERROR_CHECK(adc_oneshot_config_channel(system->adc, command->variablePin, &config));
 
