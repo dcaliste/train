@@ -109,6 +109,8 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    wifi_init_sta();
+
     /* Debug onboard led */
     ESP_ERROR_CHECK(gpio_set_direction(GPIO_NUM_2, GPIO_MODE_OUTPUT));
     ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_2, 0));
