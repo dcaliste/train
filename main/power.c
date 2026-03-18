@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include <mdns.h>
 
 #include "wifi.h"
 #include "system.h"
@@ -100,6 +101,7 @@ void test_set_pin_layout(struct Track *trackA, struct Track *trackB,
     track_new(trackB, "second track", system, command, pwm, positions, timings);
 }
 
+#define TARGET "traintest"
 void app_main(void)
 {
     esp_err_t ret = nvs_flash_init();
@@ -110,6 +112,9 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     wifi_init_sta();
+    ESP_ERROR_CHECK(mdns_init());
+    ESP_ERROR_CHECK(mdns_hostname_set(TARGET));
+    ESP_ERROR_CHECK(mdns_instance_name_set("Train controller"));
 
     /* Debug onboard led */
     ESP_ERROR_CHECK(gpio_set_direction(GPIO_NUM_2, GPIO_MODE_OUTPUT));
@@ -132,9 +137,12 @@ void app_main(void)
     timings.decDuration = timings.decTarget;
 
     struct Track trackA, trackB;
-    //esp1_set_pin_layout(&trackA, &trackB, &system, timings);
-    esp2_set_pin_layout(&trackA, &trackB, &system, timings);
-    //test_set_pin_layout(&trackA, &trackB, &system, timings);
+    if (!strcmp(TARGET, "train1"))
+        esp1_set_pin_layout(&trackA, &trackB, &system, timings);
+    else if (!strcmp(TARGET, "train2"))
+        esp2_set_pin_layout(&trackA, &trackB, &system, timings);
+    else
+        test_set_pin_layout(&trackA, &trackB, &system, timings);
 
     bt_pack_start(capabilitiesFrame(), CAPABILITIES);
     bt_pack_int(capabilitiesFrame(), 2);
