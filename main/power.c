@@ -10,6 +10,7 @@
 #include "system.h"
 #include "io.h"
 #include "track.h"
+#include "webserver.h"
 
 void esp1_set_pin_layout(struct Track *trackA, struct Track *trackB,
                          const struct System *system, const struct Timings timings)
@@ -101,6 +102,12 @@ void test_set_pin_layout(struct Track *trackA, struct Track *trackB,
     track_new(trackB, "second track", system, command, pwm, positions, timings);
 }
 
+static void disconnect_handler(void* arg, esp_event_base_t event_base,
+                               int32_t event_id, void* event_data)
+{
+    stop_webserver((httpd_handle_t*)arg);
+}
+
 #define TARGET "traintest"
 void app_main(void)
 {
@@ -148,6 +155,12 @@ void app_main(void)
     bt_pack_int(capabilitiesFrame(), 2);
     track_setup_capabilities(&trackA);
     track_setup_capabilities(&trackB);
+
+    static httpd_handle_t server = NULL;
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
+                                               &disconnect_handler, &server));
+    const struct Track *tracks[] = {&trackA, &trackB, NULL};
+    server = start_webserver(tracks);
 
     system_start(&system);
     while (1) {
