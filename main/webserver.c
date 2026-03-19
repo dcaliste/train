@@ -71,32 +71,32 @@ static const char* insert_tracks(httpd_req_t *req, const char *page, int *len)
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "<tr><td>");
             snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"6000\" step=\"100\""
-                     "id=\"decDuration\" name=\"decDuration%d\" value=\"%d\" />",
+                     "id=\"decDuration%d\" name=\"decDuration\" value=\"%d\" />",
                      i, tracks[i]->timings.decDuration);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "</td>\n<td>");
             snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"6000\" step=\"100\""
-                     "id=\"passingDuration\" name=\"passingDuration%d\" value=\"%d\" />",
+                     "id=\"passingDuration%d\" name=\"passingDuration\" value=\"%d\" />",
                      i, tracks[i]->timings.passingDuration);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "</td>\n<td>");
             snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"6000\" step=\"100\""
-                     "id=\"stationDuration\" name=\"stationDuration%d\" value=\"%d\" />",
+                     "id=\"stationDuration%d\" name=\"stationDuration\" value=\"%d\" />",
                      i, tracks[i]->timings.stationDuration);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "</td>\n<td>");
             snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"100\" max=\"1000\" step=\"100\""
-                     "id=\"breakDuration\" name=\"breakDuration%d\" value=\"%d\" />",
+                     "id=\"breakDuration%d\" name=\"breakDuration\" value=\"%d\" />",
                      i, tracks[i]->timings.breakDuration);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "</td>\n<td>");
             snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"12000\" step=\"1000\""
-                     "id=\"stopDuration\" name=\"stopDuration%d\" value=\"%d\" />",
+                     "id=\"stopDuration%d\" name=\"stopDuration\" value=\"%d\" />",
                      i, tracks[i]->timings.stopDuration);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "</td>\n<td>");
             snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"6000\" step=\"100\""
-                     "id=\"accDuration\" name=\"accDuration%d\" value=\"%d\" />",
+                     "id=\"accDuration%d\" name=\"accDuration\" value=\"%d\" />",
                      i, tracks[i]->timings.accDuration);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "</td></tr>\n");
