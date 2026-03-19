@@ -134,8 +134,8 @@ void app_main(void)
     timings.sleepTime = 50;         // Sampling period in milliseconds
     timings.passingSpeed = 2700;    // Max is 4096
     timings.stationSpeed = 1800;    // Idem
-    timings.passingDuration = 3500; // Target time for passing
-    timings.stationDuration = 4000; // Target time for station stop
+    timings.passingDuration = 3800; // Target time for passing
+    timings.stationDuration = 4500; // Target time for station stop
     timings.decTarget = 3000;       // Deceleration duration in milliseconds
     timings.accDuration = 4000;     // Acceleration duration in milliseconds
     timings.breakDuration = 300;    // Stopping duration
