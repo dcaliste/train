@@ -13,3 +13,13 @@ menu "Wifi Configuration"
             WiFi password (WPA or WPA2) for the example to use.
 
 endmenu
+
+menu "Train configuration"
+
+    config ESP_TRAIN_TARGET
+        string "Target"
+        default "train1"
+        help
+            Define the target to be flashed. Different targets are hardcoded. 
+
+endmenu

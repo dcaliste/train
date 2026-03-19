@@ -108,7 +108,7 @@ static void disconnect_handler(void* arg, esp_event_base_t event_base,
     stop_webserver((httpd_handle_t*)arg);
 }
 
-#define TARGET "traintest"
+#define TARGET CONFIG_ESP_TRAIN_TARGET
 void app_main(void)
 {
     esp_err_t ret = nvs_flash_init();
