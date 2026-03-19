@@ -4,6 +4,8 @@
 #include "system.h"
 #include "io.h"
 
+#include <nvs.h>
+
 struct Timings {
     int sleepTime;
 
@@ -40,6 +42,8 @@ struct Track {
     enum States state;
 
     struct BtSource stateFrame;
+
+    nvs_handle_t nvs;
 };
 void track_new(struct Track *track, const char *label,
                const struct System *system,

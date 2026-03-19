@@ -28,6 +28,7 @@ void track_new(struct Track *track, const char *label,
                const struct Timings timings)
 {
     static int id = 0;
+    uint16_t duration;
 
     track->id = id++;
     track->label = label;
@@ -49,12 +50,33 @@ void track_new(struct Track *track, const char *label,
     track->duration = 0;
     track->count = 0;
     track->state = SOMEWHERE;
+
+    ESP_ERROR_CHECK(nvs_open(track->label, NVS_READWRITE, &track->nvs));
+    if (nvs_get_u16(track->nvs, "decDuration", &duration) == ESP_OK) {
+        track->timings.decDuration = duration;
+    }
+    if (nvs_get_u16(track->nvs, "passingDuration", &duration) == ESP_OK) {
+        track->timings.passingDuration = duration;
+    }
+    if (nvs_get_u16(track->nvs, "stationDuration", &duration) == ESP_OK) {
+        track->timings.stationDuration = duration;
+    }
+    if (nvs_get_u16(track->nvs, "breakDuration", &duration) == ESP_OK) {
+        track->timings.breakDuration = duration;
+    }
+    if (nvs_get_u16(track->nvs, "stopDuration", &duration) == ESP_OK) {
+        track->timings.stopDuration = duration;
+    }
+    if (nvs_get_u16(track->nvs, "accDuration", &duration) == ESP_OK) {
+        track->timings.accDuration = duration;
+    }
 }
 
 void track_free(struct Track *track)
 {
     ESP_ERROR_CHECK(mcpwm_del_generator(track->pwm.generate));
     ESP_ERROR_CHECK(mcpwm_del_comparator(track->pwm.compare));
+    nvs_close(track->nvs);
 }
 
 static int bt_pack_track_state(struct BtSource *at, enum States state)
@@ -249,6 +271,8 @@ void track_set_dec_duration(struct Track *track, int duration)
     if (track->timings.decDuration != duration) {
         ESP_LOGI("Timings", "%s: set decDuration %d (was %d)", track->label, duration, track->timings.decDuration);
         track->timings.decDuration = duration;
+        nvs_set_u16(track->nvs, "decDuration", duration);
+        ESP_ERROR_CHECK(nvs_commit(track->nvs));
     }
 }
 
@@ -257,6 +281,8 @@ void track_set_passing_duration(struct Track *track, int duration)
     if (track->timings.passingDuration != duration) {
         ESP_LOGI("Timings", "%s: set passingDuration %d (was %d)", track->label, duration, track->timings.passingDuration);
         track->timings.passingDuration = duration;
+        nvs_set_u16(track->nvs, "passingDuration", duration);
+        ESP_ERROR_CHECK(nvs_commit(track->nvs));
     }
 }
 
@@ -265,6 +291,8 @@ void track_set_station_duration(struct Track *track, int duration)
     if (track->timings.stationDuration != duration) {
         ESP_LOGI("Timings", "%s: set stationDuration %d (was %d)", track->label, duration, track->timings.stationDuration);
         track->timings.stationDuration = duration;
+        nvs_set_u16(track->nvs, "stationDuration", duration);
+        ESP_ERROR_CHECK(nvs_commit(track->nvs));
     }
 }
 
@@ -273,6 +301,8 @@ void track_set_break_duration(struct Track *track, int duration)
     if (track->timings.breakDuration != duration) {
         ESP_LOGI("Timings", "%s: set breakDuration %d (was %d)", track->label, duration, track->timings.breakDuration);
         track->timings.breakDuration = duration;
+        nvs_set_u16(track->nvs, "breakDuration", duration);
+        ESP_ERROR_CHECK(nvs_commit(track->nvs));
     }
 }
 
@@ -281,6 +311,8 @@ void track_set_stop_duration(struct Track *track, int duration)
     if (track->timings.stopDuration != duration) {
         ESP_LOGI("Timings", "%s: set stopDuration %d (was %d)", track->label, duration, track->timings.stopDuration);
         track->timings.stopDuration = duration;
+        nvs_set_u16(track->nvs, "stopDuration", duration);
+        ESP_ERROR_CHECK(nvs_commit(track->nvs));
     }
 }
 
@@ -289,6 +321,8 @@ void track_set_acc_duration(struct Track *track, int duration)
     if (track->timings.accDuration != duration) {
         ESP_LOGI("Timings", "%s: set accDuration %d (was %d)", track->label, duration, track->timings.accDuration);
         track->timings.accDuration = duration;
+        nvs_set_u16(track->nvs, "accDuration", duration);
+        ESP_ERROR_CHECK(nvs_commit(track->nvs));
     }
 }
 
