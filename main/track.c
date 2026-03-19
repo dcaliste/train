@@ -53,7 +53,7 @@ void track_new(struct Track *track, const char *label,
 
     ESP_ERROR_CHECK(nvs_open(track->label, NVS_READWRITE, &track->nvs));
     if (nvs_get_u16(track->nvs, "decDuration", &duration) == ESP_OK) {
-        track->timings.decDuration = duration;
+        track->timings.decTarget = duration;
     }
     if (nvs_get_u16(track->nvs, "passingDuration", &duration) == ESP_OK) {
         track->timings.passingDuration = duration;
@@ -268,9 +268,9 @@ int track_update(struct Track *track)
 
 void track_set_dec_duration(struct Track *track, int duration)
 {
-    if (track->timings.decDuration != duration) {
-        ESP_LOGI("Timings", "%s: set decDuration %d (was %d)", track->label, duration, track->timings.decDuration);
-        track->timings.decDuration = duration;
+    if (track->timings.decTarget != duration) {
+        ESP_LOGI("Timings", "%s: set decDuration %d (was %d)", track->label, duration, track->timings.decTarget);
+        track->timings.decTarget = duration;
         nvs_set_u16(track->nvs, "decDuration", duration);
         ESP_ERROR_CHECK(nvs_commit(track->nvs));
     }

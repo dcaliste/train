@@ -67,12 +67,12 @@ static const char* insert_tracks(httpd_req_t *req, const char *page, int *len)
             httpd_resp_sendstr_chunk(req, buf);
             snprintf(buf, sizeof(buf), "<th><label for=\"stopDuration%d\">stop duration</label></th>", i);
             httpd_resp_sendstr_chunk(req, buf);
-            snprintf(buf, sizeof(buf), "<th><label for=\"accDuration%d\">accelertion duration</label></th></tr>", i);
+            snprintf(buf, sizeof(buf), "<th><label for=\"accDuration%d\">acceleration duration</label></th></tr>", i);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "<tr><td>");
             snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"6000\" step=\"100\""
                      "id=\"decDuration%d\" name=\"decDuration\" value=\"%d\" />",
-                     i, tracks[i]->timings.decDuration);
+                     i, tracks[i]->timings.decTarget);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "</td>\n<td>");
             snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"6000\" step=\"100\""
