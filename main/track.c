@@ -16,8 +16,8 @@ static void timings_adjust_duration(int *duration, int targetDuration, int realD
     *duration = *duration * realDuration / targetDuration;
     if (*duration < 300)
         *duration = 300;
-    if (*duration > 5000)
-        *duration = 5000;
+    if (*duration > 6000)
+        *duration = 6000;
 }
 
 void track_new(struct Track *track, const char *label,
@@ -243,3 +243,52 @@ int track_update(struct Track *track)
     
     return isUpdated;
 }
+
+void track_set_dec_duration(struct Track *track, int duration)
+{
+    if (track->timings.decDuration != duration) {
+        ESP_LOGI("Timings", "%s: set decDuration %d (was %d)", track->label, duration, track->timings.decDuration);
+        track->timings.decDuration = duration;
+    }
+}
+
+void track_set_passing_duration(struct Track *track, int duration)
+{
+    if (track->timings.passingDuration != duration) {
+        ESP_LOGI("Timings", "%s: set passingDuration %d (was %d)", track->label, duration, track->timings.passingDuration);
+        track->timings.passingDuration = duration;
+    }
+}
+
+void track_set_station_duration(struct Track *track, int duration)
+{
+    if (track->timings.stationDuration != duration) {
+        ESP_LOGI("Timings", "%s: set stationDuration %d (was %d)", track->label, duration, track->timings.stationDuration);
+        track->timings.stationDuration = duration;
+    }
+}
+
+void track_set_break_duration(struct Track *track, int duration)
+{
+    if (track->timings.breakDuration != duration) {
+        ESP_LOGI("Timings", "%s: set breakDuration %d (was %d)", track->label, duration, track->timings.breakDuration);
+        track->timings.breakDuration = duration;
+    }
+}
+
+void track_set_stop_duration(struct Track *track, int duration)
+{
+    if (track->timings.stopDuration != duration) {
+        ESP_LOGI("Timings", "%s: set stopDuration %d (was %d)", track->label, duration, track->timings.stopDuration);
+        track->timings.stopDuration = duration;
+    }
+}
+
+void track_set_acc_duration(struct Track *track, int duration)
+{
+    if (track->timings.accDuration != duration) {
+        ESP_LOGI("Timings", "%s: set accDuration %d (was %d)", track->label, duration, track->timings.accDuration);
+        track->timings.accDuration = duration;
+    }
+}
+

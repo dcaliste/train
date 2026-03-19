@@ -51,4 +51,11 @@ void track_free(struct Track *track);
 void track_setup_capabilities(struct Track *track);
 int track_update(struct Track *track);
 
+void track_set_dec_duration(struct Track *track, int duration);
+void track_set_passing_duration(struct Track *track, int duration);
+void track_set_station_duration(struct Track *track, int duration);
+void track_set_break_duration(struct Track *track, int duration);
+void track_set_stop_duration(struct Track *track, int duration);
+void track_set_acc_duration(struct Track *track, int duration);
+
 #endif
