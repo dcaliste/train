@@ -131,7 +131,7 @@ void app_main(void)
     system_new(&system);
 
     struct Timings timings;
-    timings.sleepTime = 50;         // Sampling period in milliseconds
+    timings.sleepTime = 10;         // Sampling period in milliseconds
     timings.passingSpeed = 2700;    // Max is 4096
     timings.stationSpeed = 1800;    // Idem
     timings.passingDuration = 3800; // Target time for passing
