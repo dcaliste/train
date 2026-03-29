@@ -5,5 +5,13 @@
   <body>
     <h1>Train controller</h1>
     <!-- %%TRACKS%% -->
+    <h1>Configuration</h1>
+    <form action="/firmware_update.html" method="POST" enctype="multipart/form-data">
+      <h2>Firmware update</h2>
+      <p>Current firmware version: <!-- %%VERSION%% --></p>
+      <label for="firmwareChooser">New firmware: </label>
+      <input type="file" id="firmware" name="firmwareChooser" accept=".bin" />
+      <input type="submit" value="Update"/>
+    </form>
   </body>
 </html>

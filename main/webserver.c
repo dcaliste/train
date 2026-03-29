@@ -30,7 +30,9 @@
  */
 
 #include "webserver.h"
+#include "ota.h"
 
+#include <esp_timer.h>
 #include <esp_log.h>
 
 #include <stdio.h>
@@ -111,6 +113,24 @@ static const char* insert_tracks(httpd_req_t *req, const char *page, int *len)
     }
 }
 
+static const char* insert_version(httpd_req_t *req, const char *page, int *len)
+{
+    const char tag[] = "<!-- %%VERSION%% -->";
+    const char *vtag = memmem(page, *len, tag, sizeof(tag) - 1);
+    char version[16];
+
+    if (vtag) {
+        int part_len = vtag - page;
+        httpd_resp_send_chunk(req, (const char *)page, part_len);
+        ESP_ERROR_CHECK(firmware_version(version, sizeof(version)));
+        httpd_resp_sendstr_chunk(req, version);
+        *len -= part_len + sizeof(tag) - 1;
+        return vtag + sizeof(tag) - 1;
+    } else {
+        return page;
+    }
+}
+
 static esp_err_t index_get_handler(httpd_req_t *req)
 {
     extern const unsigned char index_start[] asm("_binary_index_html_start");
@@ -120,7 +140,8 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     ESP_LOGI(TAG, "%s", req->uri);
     httpd_resp_set_type(req, "text/html");
 
-    const char *end = insert_tracks(req, (const char*)index_start, &len);
+    const char *next = insert_tracks(req, (const char*)index_start, &len);
+    const char *end = insert_version(req, next, &len);
     httpd_resp_send_chunk(req, end, len);
     httpd_resp_send_chunk(req, NULL, 0);
 
@@ -183,6 +204,89 @@ static esp_err_t timings_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static void restart_callback(void *arg)
+{
+    esp_timer_handle_t *timer = (esp_timer_handle_t*)arg;
+    esp_timer_delete(*timer);
+
+    ESP_LOGI(TAG, "Received restart request.");
+    esp_restart();
+}
+
+static esp_err_t firmware_post_handler(httpd_req_t *req)
+{
+    char buf[1024], ct[128];
+    int ret, remaining = req->content_len;
+    esp_ota_handle_t update_handle = 0;
+    const esp_partition_t *update_partition = NULL;
+    int binary_file_length = 0;
+
+    ESP_LOGI(TAG, "%s: content-length: %d", req->uri, req->content_len);
+    if (httpd_req_get_hdr_value_str(req, "Content-Type", ct, sizeof(ct)) == ESP_OK) {
+        char *boundary = memmem(ct, sizeof(ct), "boundary=", 9);
+        if (boundary) {
+            ESP_LOGI(TAG, "boundary: '%s'", boundary + 9);
+            remaining -= strlen(boundary + 9) + 8;
+        }
+    }
+    while (remaining > 0) {
+        /* Read the data for the request */
+        if ((ret = httpd_req_recv(req, buf,
+                                  MIN(remaining, sizeof(buf)))) <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                /* Retry receiving if timeout occurred */
+                continue;
+            }
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to receive file");
+            return ESP_FAIL;
+        }
+        remaining -= ret;
+
+        if (!update_handle) {
+            char *cr = memmem(buf, ret, "\r\n\r\n", 4);
+            int len = cr - buf;
+            ret = ret - len - 4;
+            memmove(buf, cr + 4, ret);
+            update_partition = esp_ota_get_next_update_partition(NULL);
+            update_handle = ota_init(update_partition, buf, ret);
+            if (!update_handle) {
+                httpd_resp_send_chunk(req, NULL, 0);
+                return ESP_FAIL;
+            }
+        }
+        esp_err_t err = esp_ota_write(update_handle, (const void *)buf, ret);
+        if (err != ESP_OK) {
+            httpd_resp_send_chunk(req, NULL, 0);
+            return ESP_FAIL;
+        }
+        binary_file_length += ret;
+        ESP_LOGD(TAG, "Written image length %d", binary_file_length);
+    }
+    ESP_LOGI(TAG, "Total Write binary data length: %d", binary_file_length);
+
+    if (ota_finalise(update_handle, update_partition) != ESP_OK) {
+        httpd_resp_send_chunk(req, NULL, 0);
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_set_hdr(req, "Connection", "close");
+    httpd_resp_sendstr(req, "File uploaded successfully");
+
+    ESP_LOGI(TAG, "Prepare to restart the system!");
+    esp_timer_handle_t timer;
+    const esp_timer_create_args_t timer_args = {
+        .callback = &restart_callback,
+        .arg = (void*)&timer,
+        .name = "restart"
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer));
+    ESP_ERROR_CHECK(esp_timer_start_once(timer, 2*1000*1000));
+
+    return ESP_OK;
+}
+
 static esp_err_t favicon_get_handler(httpd_req_t *req)
 {
     extern const unsigned char fav_start[] asm("_binary_favicon_png_start");
@@ -212,6 +316,13 @@ static httpd_uri_t track2Timings = {
     .uri       = "/api/track2/timings/",
     .method    = HTTP_POST,
     .handler   = timings_post_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t firmwareUpdate = {
+    .uri       = "/firmware_update.html",
+    .method    = HTTP_POST,
+    .handler   = firmware_post_handler,
     .user_ctx  = NULL
 };
 
@@ -257,6 +368,7 @@ httpd_handle_t start_webserver(const struct Track *tracks[])
                 httpd_register_uri_handler(server, &track2Timings);
             }
         }
+        httpd_register_uri_handler(server, &firmwareUpdate);
         httpd_register_uri_handler(server, &favicon);
         httpd_register_uri_handler(server, &favico);
         httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, http_404_error_handler);
