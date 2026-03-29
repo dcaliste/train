@@ -34,8 +34,8 @@ static int timings_adjust_speed(const int *durations, const int *speeds, int cou
         else
             speed = speeds[a];
     }
-    if (*speed < 768)
-        *speed = 768;
+    if (speed < minSpeed)
+        speed = minSpeed;
     if (speed > maxSpeed)
         speed = maxSpeed;
     return speed;

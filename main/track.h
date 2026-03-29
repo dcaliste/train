@@ -21,6 +21,8 @@ struct Timings {
     int passingSpeedHistory[HISTORY_LENGTH];
 
     int stopDuration, stopCount;
+
+    int minSpeed;
 };
 
 enum States {

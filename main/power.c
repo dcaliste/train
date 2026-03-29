@@ -142,6 +142,7 @@ void app_main(void)
     timings.stopDuration = 8000;    // Time spent on platform
     timings.stopCount = 3;          // Number of passing in station before a stop
     timings.decDuration = timings.decTarget;
+    timings.minSpeed = 768;
 
     struct Track *tracks = malloc(sizeof(struct Track) * 2);
     if (!strcmp(TARGET, "train1"))
