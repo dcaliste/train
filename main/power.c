@@ -143,30 +143,30 @@ void app_main(void)
     timings.stopCount = 3;          // Number of passing in station before a stop
     timings.decDuration = timings.decTarget;
 
-    struct Track trackA, trackB;
+    struct Track *tracks = malloc(sizeof(struct Track) * 2);
     if (!strcmp(TARGET, "train1"))
-        esp1_set_pin_layout(&trackA, &trackB, &system, timings);
+        esp1_set_pin_layout(tracks, tracks + 1, &system, timings);
     else if (!strcmp(TARGET, "train2"))
-        esp2_set_pin_layout(&trackA, &trackB, &system, timings);
+        esp2_set_pin_layout(tracks, tracks + 1, &system, timings);
     else
-        test_set_pin_layout(&trackA, &trackB, &system, timings);
+        test_set_pin_layout(tracks, tracks + 1, &system, timings);
 
     bt_pack_start(capabilitiesFrame(), CAPABILITIES);
     bt_pack_int(capabilitiesFrame(), 2);
-    track_setup_capabilities(&trackA);
-    track_setup_capabilities(&trackB);
+    track_setup_capabilities(tracks + 0);
+    track_setup_capabilities(tracks + 1);
 
     static httpd_handle_t server = NULL;
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
                                                &disconnect_handler, &server));
-    const struct Track *tracks[] = {&trackA, &trackB, NULL};
-    server = start_webserver(tracks);
+    const struct Track *ts[] = {tracks + 0, tracks + 1, NULL};
+    server = start_webserver(ts);
 
     system_start(&system);
     while (1) {
         ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_2, 0));
-        int trackAUpdated = track_update(&trackA);
-        int trackBUpdated = track_update(&trackB);
+        int trackAUpdated = track_update(tracks + 0);
+        int trackBUpdated = track_update(tracks + 1);
         if (trackAUpdated || trackBUpdated) {
             ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_2, 1));
         }
@@ -177,7 +177,8 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(timings.sleepTime));
     }
 
-    track_free(&trackA);
-    track_free(&trackB);
+    track_free(tracks + 0);
+    track_free(tracks + 1);
+    free(tracks);
     system_free(&system);
 }

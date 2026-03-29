@@ -2,22 +2,57 @@
 
 #include <esp_log.h>
 
-static void timings_adjust_speed(int *speed, int targetDuration, int realDuration, int maxSpeed)
+#define ABS(a) ((a) < 0 ? -(a) : (a))
+#define MAX(a, b) ((a) < (b) ? (b) : (a))
+
+static void sort_ab(const int *durations, int target, int *a, int *b)
 {
-    *speed = *speed * realDuration / targetDuration;
+    if (ABS(target - durations[*a]) > ABS(target - durations[*b])) {
+        int tmp = *a;
+        *a = *b;
+        *b = tmp;
+    }
+}
+
+static int timings_adjust_speed(const int *durations, const int *speeds, int count,
+                                int targetDuration, int minSpeed, int maxSpeed)
+{
+    int speed;
+    if (!count)
+        speed = speeds[0] * durations[0] / targetDuration;
+    else {
+        /* Find the closest history points to the target, and compare with previous. */
+        int a = count % HISTORY_LENGTH, b = (count - 1) % HISTORY_LENGTH;
+        for (int i = count - 2; i >= 0 && i > count - HISTORY_LENGTH; i--) {
+            if (ABS(targetDuration - durations[i % HISTORY_LENGTH]) < ABS(targetDuration - durations[b])
+                && durations[i % HISTORY_LENGTH] != durations[a])
+                b = i % HISTORY_LENGTH;
+        }
+        sort_ab(durations, targetDuration, &a, &b);
+        if (durations[a] != durations[b])
+            speed = speeds[a] + (speeds[b] - speeds[a]) * (targetDuration - durations[a]) / (durations[b] - durations[a]);
+        else
+            speed = speeds[a];
+    }
     if (*speed < 768)
         *speed = 768;
-    if (*speed > maxSpeed)
-        *speed = maxSpeed;
+    if (speed > maxSpeed)
+        speed = maxSpeed;
+    return speed;
 }
 
 static void timings_adjust_duration(int *duration, int targetDuration, int realDuration)
 {
     *duration = *duration * realDuration / targetDuration;
-    if (*duration < 300)
-        *duration = 300;
-    if (*duration > 6000)
-        *duration = 6000;
+    if (*duration < 100)
+        *duration = 100;
+    if (*duration > 8000)
+        *duration = 8000;
+}
+
+static void timings_store_history(int *history, int count, int duration)
+{
+    history[count % HISTORY_LENGTH] = duration;
 }
 
 void track_new(struct Track *track, const char *label,
@@ -117,6 +152,7 @@ static void track_set_state(struct Track *track, enum States state)
         break;
     case PASSING_BY:
         if (track->state == APPROACHING) {
+            timings_store_history(track->timings.decHistory, track->count, track->elapsed);
             timings_adjust_duration(&track->timings.decDuration,
                                     track->timings.decTarget, track->elapsed);
         }
@@ -125,16 +161,26 @@ static void track_set_state(struct Track *track, enum States state)
         break;
     case LEAVING:
         if (track->state == PASSING_BY) {
-            timings_adjust_speed(&track->timings.passingSpeed,
-                                 track->timings.passingDuration, track->elapsed, 3072);
+            timings_store_history(track->timings.passingHistory, track->count, track->elapsed);
+            timings_store_history(track->timings.passingSpeedHistory, track->count, track->timings.passingSpeed);
+            track->timings.passingSpeed =
+                timings_adjust_speed(track->timings.passingHistory,
+                                     track->timings.passingSpeedHistory, track->count,
+                                     track->timings.passingDuration,
+                                     track->timings.minSpeed, (MAX_SPEED >> 1) + (MAX_SPEED >> 2));
         }
         track->duration = track->timings.accDuration;
         track->elapsed = -1;
         break;
     case STOPPING:
         if (track->state == PASSING_BY) {
-            timings_adjust_speed(&track->timings.stationSpeed,
-                                 track->timings.stationDuration, track->elapsed, 2048);
+            timings_store_history(track->timings.passingHistory, track->count, track->elapsed);
+            timings_store_history(track->timings.passingSpeedHistory, track->count, track->timings.stationSpeed);
+            track->timings.stationSpeed =
+                timings_adjust_speed(track->timings.passingHistory,
+                                     track->timings.passingSpeedHistory, track->count,
+                                     track->timings.stationDuration,
+                                     track->timings.minSpeed, MAX_SPEED >> 1);
         }
         track->duration = track->timings.breakDuration;
         track->elapsed = -1;

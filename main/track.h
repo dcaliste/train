@@ -6,6 +6,8 @@
 
 #include <nvs.h>
 
+#define HISTORY_LENGTH 12
+
 struct Timings {
     int sleepTime;
 
@@ -13,6 +15,10 @@ struct Timings {
     int passingDuration, stationDuration;
     int decDuration;
     int decTarget, accDuration, breakDuration;
+
+    int decHistory[HISTORY_LENGTH];
+    int passingHistory[HISTORY_LENGTH];
+    int passingSpeedHistory[HISTORY_LENGTH];
 
     int stopDuration, stopCount;
 };

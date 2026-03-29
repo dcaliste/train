@@ -102,6 +102,33 @@ static const char* insert_tracks(httpd_req_t *req, const char *page, int *len)
                      i, tracks[i]->timings.accDuration);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "</td></tr>\n");
+            if (tracks[i]->count > 0) {
+                httpd_resp_sendstr_chunk(req, "<tr><td>");
+                for (int j = tracks[i]->count - 1; j >= 0 && tracks[i]->count - j <= HISTORY_LENGTH; j--) {
+                    snprintf(buf, sizeof(buf), "<i>%d</i>: %d<br />", j + 1, tracks[i]->timings.decHistory[j % HISTORY_LENGTH]);
+                    httpd_resp_sendstr_chunk(req, buf);
+                }
+                httpd_resp_sendstr_chunk(req, "</td>\n<td>");
+                for (int j = tracks[i]->count - 1; j >= 0 && tracks[i]->count - j <= HISTORY_LENGTH; j--) {
+                    if (j % tracks[i]->timings.stopCount)
+                        snprintf(buf, sizeof(buf), "<i>%d</i>: %d (%d)<br />", j + 1, tracks[i]->timings.passingHistory[j % HISTORY_LENGTH], tracks[i]->timings.passingSpeedHistory[j % HISTORY_LENGTH]);
+                    else
+                        snprintf(buf, sizeof(buf), "<i>%d</i>: -<br />", j + 1);
+                    httpd_resp_sendstr_chunk(req, buf);
+                }
+                httpd_resp_sendstr_chunk(req, "</td>\n<td>");
+                for (int j = tracks[i]->count - 1; j >= 0 && tracks[i]->count - j <= HISTORY_LENGTH; j--) {
+                    if (!(j % tracks[i]->timings.stopCount))
+                        snprintf(buf, sizeof(buf), "<i>%d</i>: %d (%d)<br />", j + 1, tracks[i]->timings.passingHistory[j % HISTORY_LENGTH], tracks[i]->timings.passingSpeedHistory[j % HISTORY_LENGTH]);
+                    else
+                        snprintf(buf, sizeof(buf), "<i>%d</i>: -<br />", j + 1);
+                    httpd_resp_sendstr_chunk(req, buf);
+                }
+                httpd_resp_sendstr_chunk(req, "</td>\n<td>");
+                httpd_resp_sendstr_chunk(req, "</td>\n<td>");
+                httpd_resp_sendstr_chunk(req, "</td>\n<td>");
+                httpd_resp_sendstr_chunk(req, "</td></tr>\n");
+            }
             httpd_resp_sendstr_chunk(req, "</table>\n");
             httpd_resp_sendstr_chunk(req, "<input type=\"submit\" value=\"Update\">\n");
             httpd_resp_sendstr_chunk(req, "</form>\n");
