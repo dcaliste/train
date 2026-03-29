@@ -55,7 +55,7 @@ static const char* insert_tracks(httpd_req_t *req, const char *page, int *len)
         for (unsigned int i = 0; tracks[i]; i++) {
             httpd_resp_sendstr_chunk(req, "<h2>");
             httpd_resp_sendstr_chunk(req, tracks[i]->label);
-            httpd_resp_sendstr_chunk(req, "</h2>\nTimings in ms.\n");
+            httpd_resp_sendstr_chunk(req, "</h2>\n");
             snprintf(buf, sizeof(buf), "<form action=\"/api/track%d/timings/\" method=\"POST\">\n", i + 1);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "<table>\n");
@@ -72,33 +72,33 @@ static const char* insert_tracks(httpd_req_t *req, const char *page, int *len)
             snprintf(buf, sizeof(buf), "<th><label for=\"accDuration%d\">acceleration duration</label></th></tr>", i);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "<tr><td>");
-            snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"6000\" step=\"100\""
-                     "id=\"decDuration%d\" name=\"decDuration\" value=\"%d\" />",
+            snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"8000\" step=\"100\""
+                     "id=\"decDuration%d\" name=\"decDuration\" value=\"%d\" /> ms",
                      i, tracks[i]->timings.decTarget);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "</td>\n<td>");
-            snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"6000\" step=\"100\""
-                     "id=\"passingDuration%d\" name=\"passingDuration\" value=\"%d\" />",
+            snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"8000\" step=\"100\""
+                     "id=\"passingDuration%d\" name=\"passingDuration\" value=\"%d\" /> ms",
                      i, tracks[i]->timings.passingDuration);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "</td>\n<td>");
-            snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"6000\" step=\"100\""
-                     "id=\"stationDuration%d\" name=\"stationDuration\" value=\"%d\" />",
+            snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"8000\" step=\"100\""
+                     "id=\"stationDuration%d\" name=\"stationDuration\" value=\"%d\" /> ms",
                      i, tracks[i]->timings.stationDuration);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "</td>\n<td>");
             snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"100\" max=\"1000\" step=\"100\""
-                     "id=\"breakDuration%d\" name=\"breakDuration\" value=\"%d\" />",
+                     "id=\"breakDuration%d\" name=\"breakDuration\" value=\"%d\" /> ms",
                      i, tracks[i]->timings.breakDuration);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "</td>\n<td>");
-            snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"12000\" step=\"1000\""
-                     "id=\"stopDuration%d\" name=\"stopDuration\" value=\"%d\" />",
-                     i, tracks[i]->timings.stopDuration);
+            snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1\" max=\"12\" step=\"1\""
+                     "id=\"stopDuration%d\" name=\"stopDuration\" value=\"%d\" /> s",
+                     i, tracks[i]->timings.stopDuration / 1000);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "</td>\n<td>");
-            snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"6000\" step=\"100\""
-                     "id=\"accDuration%d\" name=\"accDuration\" value=\"%d\" />",
+            snprintf(buf, sizeof(buf), "<input type=\"number\" min=\"1000\" max=\"8000\" step=\"100\""
+                     "id=\"accDuration%d\" name=\"accDuration\" value=\"%d\" /> ms",
                      i, tracks[i]->timings.accDuration);
             httpd_resp_sendstr_chunk(req, buf);
             httpd_resp_sendstr_chunk(req, "</td></tr>\n");
@@ -187,7 +187,7 @@ static esp_err_t timings_post_handler(httpd_req_t *req)
                 } else if (!strcmp(data, "breakDuration")) {
                     track_set_break_duration((struct Track*)req->user_ctx, value);
                 } else if (!strcmp(data, "stopDuration")) {
-                    track_set_stop_duration((struct Track*)req->user_ctx, value);
+                    track_set_stop_duration((struct Track*)req->user_ctx, value * 1000);
                 } else if (!strcmp(data, "accDuration")) {
                     track_set_acc_duration((struct Track*)req->user_ctx, value);
                 }
